@@ -1,0 +1,75 @@
+@import "tailwindcss";
+
+/* ── OPPESM Document Tracker design tokens ───────────────────
+   Carried over from the original PESO tracker (dark, IBM Plex). */
+:root {
+  --bg: #0a0d16;
+  --surface: #111420;
+  --surface2: #1a1f30;
+  --surface3: #222840;
+  --border: #272d44;
+  --accent: #4f8ef7;
+  --accent2: #6ee7b7;
+  --warn: #fbbf24;
+  --danger: #f87171;
+  --purple: #a78bfa;
+  --orange: #fb923c;
+  --text: #e8eaf6;
+  --text2: #8891b3;
+  --text3: #4d5578;
+  --radius: 10px;
+  --sidebar: 234px;
+}
+
+* ,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body {
+  min-height: 100vh;
+  background: var(--bg);
+  color: var(--text);
+  font-family: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Subtle grid backdrop used across both pages. */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(79, 142, 247, 0.025) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(79, 142, 247, 0.025) 1px, transparent 1px);
+  background-size: 48px 48px;
+  pointer-events: none;
+  z-index: 0;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.mono {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+}
+
+/* Thin scrollbars to match the dark UI. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 8px;
+}
