@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
-import { getStaff } from "@/lib/staff";
+import { getStaff, toPublicStaff } from "@/lib/staff";
 
-// Public — used by the submission form's staff picker.
+// Public — used by the submission form's staff picker. Names and positions
+// only; emails are looked up server-side at submit time.
 export async function GET() {
-  return NextResponse.json(await getStaff());
+  return NextResponse.json(toPublicStaff(await getStaff()));
 }

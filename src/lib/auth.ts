@@ -8,6 +8,10 @@
 
 export const SESSION_COOKIE = "oppesm_admin_session";
 
+// The staff member who signed in (picked from the Staff Directory at login).
+// Self-declared — the password is shared — but it's what the audit trail records.
+export const ADMIN_NAME_COOKIE = "oppesm_admin_name";
+
 export function getAdminPassword(): string | undefined {
   const password = process.env.ADMIN_PASSWORD;
   return password && password.trim() !== "" ? password : undefined;

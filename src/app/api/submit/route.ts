@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { submitDocument, type DocType } from "@/lib/documents";
 import { isBackendConnected } from "@/lib/sheet";
+import { getStaff } from "@/lib/staff";
 
 // Public endpoint — anyone with the link can submit a document or task.
 export async function POST(request: Request) {
@@ -8,7 +9,7 @@ export async function POST(request: Request) {
     docType?: string;
     title?: string;
     description?: string;
-    staff?: { name: string; email: string }[];
+    staff?: string[]; // staff names; emails are looked up server-side
     processingTime?: string;
     dueDate?: string;
     addToCalendar?: boolean;
@@ -31,9 +32,13 @@ export async function POST(request: Request) {
   const description = String(body.description ?? "").trim();
   const dueDate = String(body.dueDate ?? "").trim();
   const files = Array.isArray(body.files) ? body.files : [];
-  const staffList = Array.isArray(body.staff) ? body.staff : [];
-  const staffNames = staffList.map((s) => String(s?.name ?? "").trim()).filter(Boolean).join(", ");
-  const staffEmails = staffList.map((s) => String(s?.email ?? "").trim()).filter(Boolean);
+  // Only names that exist in the Staff Directory are accepted.
+  const requested = new Set(
+    (Array.isArray(body.staff) ? body.staff : []).map((n) => String(n ?? "").trim()).filter(Boolean)
+  );
+  const staffList = (await getStaff()).filter((s) => requested.has(s.name));
+  const staffNames = staffList.map((s) => s.name).join(", ");
+  const staffEmails = staffList.map((s) => s.email).filter(Boolean);
   // Calendar note applies to Incoming Docs and Tasks.
   const addToCalendar =
     (docType === "Incoming Docs" || isTask) && body.addToCalendar === true;

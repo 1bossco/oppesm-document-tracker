@@ -2,13 +2,8 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { TitleOption } from "@/lib/titles";
-import type { StaffMember } from "@/lib/staff";
-
-interface PreparedFile {
-  name: string;
-  type: string;
-  blob: Blob;
-}
+import type { PublicStaff } from "@/lib/staff";
+import { MAX_UPLOAD_BYTES, blobToBase64, formatBytes, prepareFile, type PreparedFile } from "@/lib/image";
 
 export function SubmitForm({
   initialTitles,
@@ -16,15 +11,15 @@ export function SubmitForm({
   connected,
 }: {
   initialTitles: TitleOption[];
-  initialStaff: StaffMember[];
+  initialStaff: PublicStaff[];
   connected: boolean;
 }) {
   const [titles] = useState<TitleOption[]>(initialTitles);
-  const [staffDirectory] = useState<StaffMember[]>(initialStaff);
+  const [staffDirectory] = useState<PublicStaff[]>(initialStaff);
   const [docType, setDocType] = useState("");
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
-  const [selectedStaff, setSelectedStaff] = useState<StaffMember[]>([]);
+  const [selectedStaff, setSelectedStaff] = useState<PublicStaff[]>([]);
   const [staffSearch, setStaffSearch] = useState("");
   const [staffOpen, setStaffOpen] = useState(false);
   const [addToCalendar, setAddToCalendar] = useState(false);
@@ -45,7 +40,9 @@ export function SubmitForm({
   const isTask = docType === "New Task";
   const showCalendar = isIncoming || isTask;
 
-  function toggleStaff(member: StaffMember) {
+  const totalBytes = files.reduce((sum, f) => sum + f.blob.size, 0);
+
+  function toggleStaff(member: PublicStaff) {
     setSelectedStaff((prev) =>
       prev.some((s) => s.name === member.name)
         ? prev.filter((s) => s.name !== member.name)
@@ -78,20 +75,14 @@ export function SubmitForm({
     const nextPreviews: typeof previews = [];
 
     for (const file of rawFiles) {
-      const isImage = file.type.startsWith("image/");
-      if (isImage) {
-        try {
-          const corrected = await correctImageOrientation(file);
-          nextFiles.push(corrected);
-          nextPreviews.push({ kind: "img", url: URL.createObjectURL(corrected.blob), name: corrected.name, ext: "", ico: "" });
-        } catch {
-          nextFiles.push({ name: file.name, type: file.type, blob: file });
-          nextPreviews.push(makeFileMeta(file));
-        }
-      } else {
-        nextFiles.push({ name: file.name, type: file.type, blob: file });
-        nextPreviews.push(makeFileMeta(file));
-      }
+      // Photos are rotated upright and shrunk to fit the upload limit.
+      const prepared = await prepareFile(file);
+      nextFiles.push(prepared);
+      nextPreviews.push(
+        prepared.type.startsWith("image/")
+          ? { kind: "img", url: URL.createObjectURL(prepared.blob), name: prepared.name, ext: "", ico: "" }
+          : makeFileMeta(file)
+      );
     }
 
     setFiles((prev) => [...prev, ...nextFiles]);
@@ -109,26 +100,27 @@ export function SubmitForm({
       setToast({ title: "Missing Fields", body: "Please attach at least one file.", error: true });
       return;
     }
-
-    setBusy(true);
-    setStatus("Preparing files…");
-    setControlNo("");
-
-    const payloadFiles: { name: string; type: string; data: string }[] = [];
-    for (let i = 0; i < files.length; i++) {
-      setStatus(`Preparing file ${i + 1} of ${files.length}…`);
-      const cf = files[i];
-      const base64 = await new Promise<string>((resolve, reject) => {
-        const r = new FileReader();
-        r.onload = () => resolve(String(r.result).split(",")[1]);
-        r.onerror = () => reject(new Error("Read failed"));
-        r.readAsDataURL(cf.blob);
+    if (totalBytes > MAX_UPLOAD_BYTES) {
+      setToast({
+        title: "Files Too Large",
+        body: `Attachments total ${formatBytes(totalBytes)}; the limit is ${formatBytes(MAX_UPLOAD_BYTES)}. Remove some files or split them into separate submissions.`,
+        error: true,
       });
-      payloadFiles.push({ name: cf.name, type: cf.type, data: base64 });
+      return;
     }
 
-    setStatus("Uploading to server…");
+    setBusy(true);
+    setControlNo("");
+
     try {
+      const payloadFiles: { name: string; type: string; data: string }[] = [];
+      for (let i = 0; i < files.length; i++) {
+        setStatus(`Preparing file ${i + 1} of ${files.length}…`);
+        const cf = files[i];
+        payloadFiles.push({ name: cf.name, type: cf.type, data: await blobToBase64(cf.blob) });
+      }
+
+      setStatus("Uploading to server…");
       const res = await fetch("/api/submit", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -136,14 +128,17 @@ export function SubmitForm({
           docType,
           title,
           description,
-          staff: selectedStaff.map((s) => ({ name: s.name, email: s.email })),
+          staff: selectedStaff.map((s) => s.name),
           addToCalendar: showCalendar && addToCalendar,
           processingTime,
           dueDate: isTask ? dueDate : "",
           files: payloadFiles,
         }),
       });
-      const result = await res.json();
+      const result = await res.json().catch(() => ({
+        success: false,
+        error: res.status === 413 ? "Attachments are too large to upload." : `Server error (${res.status}).`,
+      }));
       setStatus("");
       if (result.success) {
         setControlNo(result.controlNo);
@@ -306,7 +301,7 @@ export function SubmitForm({
                         <input type="checkbox" checked={checked} onChange={() => toggleStaff(s)} />
                         <span className="si-main">
                           <span className="si-name">{s.name}</span>
-                          <span className="si-sub">{s.position}{s.email ? " · " + s.email : " · no email"}</span>
+                          <span className="si-sub">{s.position}{s.hasEmail ? "" : " · no email"}</span>
                         </span>
                       </label>
                     );
@@ -322,8 +317,8 @@ export function SubmitForm({
           </div>
           {selectedStaff.length > 0 && (
             <div className="staff-note">
-              📧 {selectedStaff.filter((s) => s.email).length} of {selectedStaff.length} will be emailed
-              {selectedStaff.some((s) => !s.email) && " (some have no email on file)"}
+              📧 {selectedStaff.filter((s) => s.hasEmail).length} of {selectedStaff.length} will be emailed
+              {selectedStaff.some((s) => !s.hasEmail) && " (some have no email on file)"}
               {!connected && " — demo mode, nothing is actually sent"}.
             </div>
           )}
@@ -367,8 +362,9 @@ export function SubmitForm({
               </label>
             </div>
             {files.length > 0 && (
-              <div className="file-count show">
-                {files.length} file{files.length !== 1 ? "s" : ""} ready
+              <div className={"file-count show" + (totalBytes > MAX_UPLOAD_BYTES ? " over" : "")}>
+                {files.length} file{files.length !== 1 ? "s" : ""} ready · {formatBytes(totalBytes)} of {formatBytes(MAX_UPLOAD_BYTES)}
+                {totalBytes > MAX_UPLOAD_BYTES && " — too large, remove some files"}
               </div>
             )}
             {previews.length > 0 && (
@@ -424,75 +420,6 @@ function getFileIcon(mimeType: string, ext: string) {
   return "📎";
 }
 
-async function correctImageOrientation(file: File): Promise<PreparedFile> {
-  const orientation = await getExifOrientation(file);
-  const imgEl = await loadImage(file);
-  const canvas = document.createElement("canvas");
-  const ctx = canvas.getContext("2d")!;
-  const w = imgEl.naturalWidth;
-  const h = imgEl.naturalHeight;
-  if (orientation >= 5 && orientation <= 8) { canvas.width = h; canvas.height = w; }
-  else { canvas.width = w; canvas.height = h; }
-  applyExifTransform(ctx, orientation, w, h);
-  ctx.drawImage(imgEl, 0, 0);
-  const blob = await new Promise<Blob>((resolve) => canvas.toBlob((b) => resolve(b!), "image/jpeg", 0.92));
-  const baseName = file.name.replace(/\.[^.]+$/, "") || "image";
-  return { name: baseName + ".jpg", type: "image/jpeg", blob };
-}
-
-function getExifOrientation(file: File): Promise<number> {
-  return new Promise((resolve) => {
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      try {
-        const view = new DataView(e.target!.result as ArrayBuffer);
-        if (view.getUint16(0, false) !== 0xffd8) return resolve(1);
-        let offset = 2;
-        while (offset < view.byteLength) {
-          const marker = view.getUint16(offset, false); offset += 2;
-          if (marker === 0xffe1) {
-            if (view.getUint32((offset += 2), false) !== 0x45786966) return resolve(1);
-            const little = view.getUint16((offset += 6), false) === 0x4949;
-            offset += view.getUint32(offset + 4, little);
-            const tags = view.getUint16(offset, little); offset += 2;
-            for (let i = 0; i < tags; i++) {
-              if (view.getUint16(offset + i * 12, little) === 0x0112) {
-                return resolve(view.getUint16(offset + i * 12 + 8, little));
-              }
-            }
-          } else if ((marker & 0xff00) !== 0xff00) { break; }
-          else { offset += view.getUint16(offset, false); }
-        }
-        resolve(1);
-      } catch { resolve(1); }
-    };
-    reader.onerror = () => resolve(1);
-    reader.readAsArrayBuffer(file.slice(0, 131072));
-  });
-}
-
-function loadImage(file: File): Promise<HTMLImageElement> {
-  return new Promise((resolve, reject) => {
-    const url = URL.createObjectURL(file);
-    const img = new Image();
-    img.onload = () => { URL.revokeObjectURL(url); resolve(img); };
-    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error("Image load failed")); };
-    img.src = url;
-  });
-}
-
-function applyExifTransform(ctx: CanvasRenderingContext2D, orientation: number, w: number, h: number) {
-  switch (orientation) {
-    case 2: ctx.transform(-1, 0, 0, 1, w, 0); break;
-    case 3: ctx.transform(-1, 0, 0, -1, w, h); break;
-    case 4: ctx.transform(1, 0, 0, -1, 0, h); break;
-    case 5: ctx.transform(0, 1, 1, 0, 0, 0); break;
-    case 6: ctx.transform(0, 1, -1, 0, h, 0); break;
-    case 7: ctx.transform(0, -1, -1, 0, h, w); break;
-    case 8: ctx.transform(0, -1, 1, 0, 0, w); break;
-  }
-}
-
 const FORM_CSS = `
 .submit-scope .card { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 32px; box-shadow: 0 24px 60px rgba(0,0,0,0.4), 0 0 0 1px rgba(79,142,247,0.08); }
 .submit-scope .form-group { margin-bottom: 20px; }
@@ -519,6 +446,7 @@ const FORM_CSS = `
 .submit-scope .upload-btn .ub-title { font-size: 12px; font-weight: 700; color: var(--text); }
 .submit-scope .upload-btn .ub-sub { font-size: 10px; color: var(--text2); text-align: center; line-height: 1.4; }
 .submit-scope .file-count { padding: 8px 14px; font-size: 12px; font-family: "IBM Plex Mono", monospace; color: var(--accent2); border-top: 1px solid var(--border); background: rgba(110,231,183,0.04); }
+.submit-scope .file-count.over { color: var(--danger); background: rgba(248,113,113,0.06); }
 .submit-scope .preview-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(76px, 1fr)); gap: 8px; padding: 10px 14px; border-top: 1px solid var(--border); }
 .submit-scope .preview-thumb { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 6px; border: 1px solid var(--border); }
 .submit-scope .preview-file { width: 100%; aspect-ratio: 1; border-radius: 6px; border: 1px solid var(--border); background: var(--surface2); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; padding: 6px; overflow: hidden; }

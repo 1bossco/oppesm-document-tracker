@@ -223,18 +223,20 @@ export async function submitDocument(payload: SubmitPayload) {
   return backendPost({ action: "submit", ...payload });
 }
 
+// `user` is the signed-in admin's name, recorded in the Audit Trail.
 export async function updateDocumentField(
   controlNo: string,
   field: "progress" | "statusDoc" | "printStatus",
-  value: string
+  value: string,
+  user: string
 ) {
-  return backendPost({ action: "updateStatus", controlNo, field, value });
+  return backendPost({ action: "updateStatus", controlNo, field, value, user });
 }
 
-export async function markAsPrinted(controlNo: string) {
-  return backendPost({ action: "markPrinted", controlNo });
+export async function markAsPrinted(controlNo: string, user: string) {
+  return backendPost({ action: "markPrinted", controlNo, user });
 }
 
-export async function deleteDocument(controlNo: string) {
-  return backendPost({ action: "delete", controlNo });
+export async function deleteDocument(controlNo: string, user: string) {
+  return backendPost({ action: "delete", controlNo, user });
 }

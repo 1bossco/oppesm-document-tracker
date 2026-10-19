@@ -38,7 +38,18 @@ export const sampleStaff: StaffMember[] = [
   { name: "Cruz, Mark Lester De Jesus", employeeNo: "60010471", position: "LEO II", contact: "0917-457-3655", email: "mrklstrcruz@gmail.com", status: "Job Order" },
 ];
 
-/** The staff roster for the assignment picker. */
+/** What the browser is allowed to see — no phone numbers or email addresses. */
+export interface PublicStaff {
+  name: string;
+  position: string;
+  hasEmail: boolean;
+}
+
+export function toPublicStaff(staff: StaffMember[]): PublicStaff[] {
+  return staff.map((s) => ({ name: s.name, position: s.position, hasEmail: s.email !== "" }));
+}
+
+/** Full staff roster (server-side only — contains contact details). */
 export async function getStaff(): Promise<StaffMember[]> {
   const rows = await backendGet<StaffRow[]>("staff");
   if (!rows) return sampleStaff;

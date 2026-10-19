@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import type { TrackedDocument, DashboardStats } from "@/lib/documents";
 import type { AuditEntry } from "@/lib/audit";
 import type { PrintData } from "@/lib/printing";
-import type { StaffMember } from "@/lib/staff";
+import type { PublicStaff } from "@/lib/staff";
 import { TaskThread } from "@/components/TaskThread";
 
 type View = "dashboard" | "documents" | "printing" | "audit";
@@ -121,13 +121,15 @@ export function AdminDashboard({
   initialAudit,
   initialPrintData,
   staff,
+  adminName,
   connected,
 }: {
   initialDocs: TrackedDocument[];
   initialStats: DashboardStats;
   initialAudit: AuditEntry[];
   initialPrintData: PrintData;
-  staff: StaffMember[];
+  staff: PublicStaff[];
+  adminName: string;
   connected: boolean;
 }) {
   const router = useRouter();
@@ -286,6 +288,7 @@ export function AdminDashboard({
             </button>
           </nav>
           <div className="sb-foot">
+            <div className="sb-user">Signed in as <b>{adminName}</b></div>
             <button className="back-btn" onClick={signOut}>⟵ Sign out</button>
           </div>
         </aside>
@@ -682,6 +685,8 @@ const ADMIN_CSS = `
 .admin-scope .nbadge.yellow { background: var(--warn); color: #000; }
 .admin-scope .nbadge.blue { background: var(--accent); color: #fff; }
 .admin-scope .sb-foot { padding: 14px 18px; border-top: 1px solid var(--border); }
+.admin-scope .sb-user { font-size: 11px; color: var(--text3); margin-bottom: 8px; }
+.admin-scope .sb-user b { color: var(--text2); font-weight: 600; }
 .admin-scope .back-btn { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text2); cursor: pointer; background: none; border: none; font-family: inherit; transition: color .2s; padding: 0; width: 100%; text-align: left; }
 .admin-scope .back-btn:hover { color: var(--text); }
 .admin-scope .main { margin-left: var(--sidebar); min-height: 100vh; }

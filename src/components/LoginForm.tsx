@@ -3,21 +3,26 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 
-export function LoginForm() {
+export function LoginForm({ names, passwordRequired }: { names: string[]; passwordRequired: boolean }) {
   const router = useRouter();
+  const [name, setName] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
+    if (!name) {
+      setError("Please select your name.");
+      return;
+    }
     setBusy(true);
     setError("");
     try {
       const res = await fetch("/api/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ password }),
+        body: JSON.stringify({ name, password }),
       });
       if (res.ok) {
         router.replace("/admin");
@@ -43,14 +48,21 @@ export function LoginForm() {
           <p>Office of the Provincial Public Employment Service Manager</p>
         </div>
         {error && <div className="lerr" style={{ display: "block" }}>{error}</div>}
-        <input
-          className="linput"
-          type="password"
-          placeholder="Enter admin password"
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          autoFocus
-        />
+        <select className="linput" value={name} onChange={(e) => setName(e.target.value)} autoFocus>
+          <option value="">Select your name…</option>
+          {names.map((n) => (
+            <option key={n} value={n}>{n}</option>
+          ))}
+        </select>
+        {passwordRequired && (
+          <input
+            className="linput"
+            type="password"
+            placeholder="Enter admin password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+          />
+        )}
         <button className="lbtn" type="submit" disabled={busy}>
           {busy ? "Signing in…" : "Sign In"}
         </button>

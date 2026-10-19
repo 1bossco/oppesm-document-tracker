@@ -5,10 +5,17 @@
 // A read returns `null` (not `[]`) when the backend isn't reachable, so callers
 // can tell "not connected" apart from "connected but empty" and fall back to
 // sample data for local preview.
+//
+// Every request carries APPS_SCRIPT_SECRET as `key`; Code.gs rejects requests
+// whose key doesn't match its API_SECRET script property.
 
 export function getBackendUrl(): string | undefined {
   const url = process.env.GOOGLE_APPS_SCRIPT_URL;
   return url && url.trim() !== "" ? url.trim() : undefined;
+}
+
+function getBackendSecret(): string {
+  return (process.env.APPS_SCRIPT_SECRET ?? "").trim();
 }
 
 export function isBackendConnected(): boolean {
@@ -24,7 +31,7 @@ export async function backendGet<T>(
   if (!url) return null;
 
   try {
-    const search = new URLSearchParams({ resource, ...params });
+    const search = new URLSearchParams({ resource, ...params, key: getBackendSecret() });
     const separator = url.includes("?") ? "&" : "?";
     const response = await fetch(`${url}${separator}${search.toString()}`, {
       cache: "no-store",
@@ -32,7 +39,13 @@ export async function backendGet<T>(
     });
     if (!response.ok) return null;
 
-    return JSON.parse(await response.text()) as T;
+    const parsed = JSON.parse(await response.text());
+    // The backend reports failures (e.g. a wrong secret) as { error }.
+    if (parsed && !Array.isArray(parsed) && typeof parsed.error === "string") {
+      console.error(`Apps Script "${resource}" error: ${parsed.error}`);
+      return null;
+    }
+    return parsed as T;
   } catch {
     return null;
   }
@@ -57,7 +70,7 @@ export async function backendPost(
       // text/plain avoids a CORS preflight against Apps Script while still
       // sending a JSON body the backend parses by hand.
       headers: { "Content-Type": "text/plain;charset=utf-8" },
-      body: JSON.stringify(payload),
+      body: JSON.stringify({ ...payload, key: getBackendSecret() }),
       cache: "no-store",
     });
 

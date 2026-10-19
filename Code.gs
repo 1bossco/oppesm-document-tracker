@@ -11,6 +11,10 @@
 //   2. Deploy → New deployment → Web app.
 //        Execute as: Me    ·    Who has access: Anyone
 //   3. Copy the /exec URL → set as GOOGLE_APPS_SCRIPT_URL in Vercel.
+//   4. Project Settings → Script Properties → add API_SECRET (long random
+//      value); set the same value as APPS_SCRIPT_SECRET in Vercel.
+//   Updating later: Deploy → Manage deployments → Edit → Version: New version
+//   (keeps the same /exec URL — don't use "New deployment").
 //
 // Sheets used (created automatically if missing):
 //   Incoming Docs · Outgoing Docs · Title of Document · Printing · Audit Trail
@@ -44,10 +48,21 @@ function getOrCreateFolder_(name) {
   return folders.hasNext() ? folders.next() : DriveApp.createFolder(name);
 }
 
+// Shared secret between this script and the Next.js server. Set it under
+// Project Settings → Script Properties → API_SECRET, and the same value as
+// APPS_SCRIPT_SECRET in Vercel. While API_SECRET is unset, every request is
+// allowed (so pasting this file never breaks a live site before it's configured).
+function authorized_(key) {
+  const secret = PropertiesService.getScriptProperties().getProperty("API_SECRET");
+  if (!secret) return true;
+  return String(key || "") === secret;
+}
+
 // ════════════════════════════════════════════════════════════
 // GET — read resources
 // ════════════════════════════════════════════════════════════
 function doGet(e) {
+  if (!authorized_(e && e.parameter && e.parameter.key)) return jsonOut_({ error: "Unauthorized." });
   const resource = (e && e.parameter && e.parameter.resource) || "documents";
   try {
     if (resource === "documents") return jsonOut_(readDocuments_());
@@ -221,6 +236,7 @@ function doPost(e) {
   let payload;
   try { payload = JSON.parse(e.postData.contents); }
   catch (err) { return jsonOut_({ success: false, error: "Invalid JSON body." }); }
+  if (!authorized_(payload.key)) return jsonOut_({ success: false, error: "Unauthorized." });
 
   try {
     switch (payload.action) {
@@ -253,8 +269,8 @@ function submitDocument_(p) {
     const sheet = isTask ? getTasksSheet_(ss) : ss.getSheetByName(docType);
     if (!sheet) throw new Error("Sheet not found: " + docType);
 
-    // Daily sequence — count existing rows with the same prefix + date, +1.
-    const seqNum = countTodaysControlNos_(sheet, prefix + "-" + dateStr) + 1;
+    // Daily sequence — highest number used today + 1 (never reuses a deleted number).
+    const seqNum = nextSeq_(sheet, prefix + "-" + dateStr);
     const controlNo = prefix + "-" + dateStr + "-" + String(seqNum).padStart(3, "0");
 
     // Upload files to a Drive subfolder (skipped for tasks with no files).
@@ -415,14 +431,18 @@ function row_(label, value) {
     '</td><td style="padding:4px 0;font-weight:600">' + (value || "—") + '</td></tr>';
 }
 
-function countTodaysControlNos_(sheet, controlPrefix) {
-  if (sheet.getLastRow() < 2) return 0;
+function nextSeq_(sheet, controlPrefix) {
+  if (sheet.getLastRow() < 2) return 1;
   const ids = sheet.getRange(2, 2, sheet.getLastRow() - 1, 1).getValues();
-  let count = 0;
+  let max = 0;
   ids.forEach(function (r) {
-    if (String(r[0]).indexOf(controlPrefix) === 0) count++;
+    const id = String(r[0]);
+    if (id.indexOf(controlPrefix + "-") === 0) {
+      const n = parseInt(id.slice(controlPrefix.length + 1), 10);
+      if (n > max) max = n;
+    }
   });
-  return count;
+  return max + 1;
 }
 
 function updatePrintingSheet_(ss, controlNo, title, description, timestamp) {
@@ -470,7 +490,7 @@ function updateStatus_(p) {
       const sheetRow = idx + 2;
       const oldVal = data[idx][col - 1];
       sheet.getRange(sheetRow, col).setValue(p.value);
-      logAudit_(ss, "Update " + p.field, p.controlNo, oldVal, p.value, "Admin");
+      logAudit_(ss, "Update " + p.field, p.controlNo, oldVal, p.value, p.user || "Admin");
       return { success: true };
     }
   }
@@ -490,7 +510,7 @@ function markPrinted_(p) {
   sheet.getRange(sheetRow, 9).setValue("Done");     // statusDoc
   sheet.getRange(sheetRow, 10).setValue("Done");    // progress
   sheet.getRange(sheetRow, 11).setValue("Printed"); // printStatus
-  logAudit_(ss, "Mark Printed", p.controlNo, "For Printing", "Printed → Done", "Admin");
+  logAudit_(ss, "Mark Printed", p.controlNo, "For Printing", "Printed → Done", p.user || "Admin");
   return { success: true };
 }
 
@@ -505,7 +525,17 @@ function deleteDocument_(p) {
       if (data[i][1] === p.controlNo) sheet.deleteRow(i + 2);
     }
   });
-  logAudit_(ss, "Delete", p.controlNo, "", "Deleted", "Admin");
+
+  // Move the document's upload folder to the Drive trash (recoverable for 30 days).
+  try {
+    const parent = getOrCreateFolder_(FOLDER_NAME);
+    const folders = parent.getFoldersByName(p.controlNo);
+    while (folders.hasNext()) folders.next().setTrashed(true);
+  } catch (err) {
+    Logger.log("Drive cleanup error: " + err.message);
+  }
+
+  logAudit_(ss, "Delete", p.controlNo, "", "Deleted", p.user || "Admin");
   return { success: true };
 }
 

@@ -1,6 +1,6 @@
 import { isBackendConnected } from "@/lib/sheet";
 import { getTitles } from "@/lib/titles";
-import { getStaff } from "@/lib/staff";
+import { getStaff, toPublicStaff } from "@/lib/staff";
 import { SubmitForm } from "@/components/SubmitForm";
 
 // Always render fresh — the title list comes from the live spreadsheet.
@@ -69,7 +69,7 @@ export default async function Home() {
           </div>
         )}
 
-        <SubmitForm initialTitles={titles} initialStaff={staff} connected={connected} />
+        <SubmitForm initialTitles={titles} initialStaff={toPublicStaff(staff)} connected={connected} />
 
         <div style={{ textAlign: "center", marginTop: 20, fontSize: 12, color: "var(--text2)" }}>
           <a

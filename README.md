@@ -32,6 +32,12 @@ Browser ─▶ Next.js (Vercel)  ─▶  Apps Script Web App  ─▶  Google She
 | Sequence was a global running count | Now resets **daily** (`IN-260716-001`). |
 | A Google Doc was created per submission | Removed — files go straight to the Drive subfolder. Faster, less quota. |
 | `processingTime` was numeric-only | Now free text ("3 days", "5–7 working days"). |
+| Anyone with the Apps Script `/exec` URL could read/delete data | Every request must carry a shared secret (`API_SECRET` ↔ `APPS_SCRIPT_SECRET`). |
+| A deleted control number could be reissued | Next number = highest used today + 1. |
+| Public staff list exposed phone numbers and emails | Browser only gets names/positions; emails are looked up server-side. |
+| Uploads over Vercel's ~4.5 MB body limit failed | Photos are resized (≤2000 px JPEG) in the browser; total capped at 3 MB per submission with a clear message. |
+| Audit trail always said "Admin" | Admins pick their name at login; it's recorded on every change. |
+| Deleting a record left its Drive folder | The folder is moved to the Drive trash (recoverable 30 days). |
 
 ## Run locally (demo mode — no spreadsheet needed)
 
@@ -50,12 +56,20 @@ Log into `/admin` with the password in `.env.local` (default `0000`).
 2. Paste `Code.gs` (the `SPREADSHEET_ID` is already set to your sheet).
 3. **Deploy → New deployment → Web app** — *Execute as: Me*, *Who has access: Anyone*.
 4. Copy the `/exec` URL.
+5. **Project Settings → Script Properties → Add property** `API_SECRET` = a long random
+   string. Use the same value for `APPS_SCRIPT_SECRET` in Vercel. Until this property is
+   set the script accepts any request, so don't skip it.
+
+**Updating `Code.gs` later:** paste the new code, then **Deploy → Manage deployments →
+✏️ Edit → Version: New version → Deploy**. This keeps the same `/exec` URL. (Choosing
+"New deployment" creates a new URL that Vercel doesn't know about.)
 
 ## Deploy to Vercel
 
 1. Push this folder to a Git repo and import it in Vercel (framework: Next.js).
 2. Set **Environment Variables**:
    - `GOOGLE_APPS_SCRIPT_URL` = the `/exec` URL from above
+   - `APPS_SCRIPT_SECRET` = the same value as the `API_SECRET` Script Property
    - `ADMIN_PASSWORD` = a strong password
 3. Deploy. The public form is at `/`, the admin dashboard at `/admin`.
 
@@ -83,7 +97,11 @@ calendar events are sent until it's connected under the right account.
 
 ## Notes
 
-- Uploads are sent as base64 through the Next.js API. For very large batches,
-  keep individual submissions to a few files / modest sizes.
+- Uploads are sent as base64 through the Next.js API, which Vercel caps at ~4.5 MB per
+  request. Photos are shrunk automatically; other files (PDF, DOCX…) must total ≤ 3 MB
+  per submission or MOV upload.
+- Admin sign-in asks for your name (from the Staff Directory) plus the shared password.
+  The name is self-declared — anyone with the password can pick any name — but it's what
+  the Audit Trail records.
 - Your spreadsheet columns are unchanged: `timestamp, controlNo, docType, title,
   description, fileUrl, staff, processingTime, statusDoc(Status), progress, printStatus`.

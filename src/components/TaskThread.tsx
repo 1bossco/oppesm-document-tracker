@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import type { StaffMember } from "@/lib/staff";
+import type { PublicStaff } from "@/lib/staff";
+import { MAX_UPLOAD_BYTES, blobToBase64, formatBytes, prepareFile } from "@/lib/image";
 import type { ChatMessage } from "@/lib/chat";
 import type { MovItem } from "@/lib/mov";
 
@@ -23,7 +24,7 @@ export function TaskThread({
 }: {
   controlNo: string;
   title: string;
-  staff: StaffMember[];
+  staff: PublicStaff[];
   connected: boolean;
   initialTab: "chat" | "mov";
   onClose: () => void;
@@ -113,12 +114,13 @@ export function TaskThread({
     setBusy(true);
     setError("");
     try {
-      const data = await new Promise<string>((resolve, reject) => {
-        const r = new FileReader();
-        r.onload = () => resolve(String(r.result).split(",")[1]);
-        r.onerror = () => reject(new Error("read failed"));
-        r.readAsDataURL(file);
-      });
+      const prepared = await prepareFile(file);
+      if (prepared.blob.size > MAX_UPLOAD_BYTES) {
+        setError(`File is ${formatBytes(prepared.blob.size)}; the limit is ${formatBytes(MAX_UPLOAD_BYTES)}.`);
+        if (fileRef.current) fileRef.current.value = "";
+        return;
+      }
+      const data = await blobToBase64(prepared.blob);
       const res = await fetch("/api/mov", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -126,10 +128,12 @@ export function TaskThread({
           controlNo,
           uploadedBy: identity,
           note: movNote.trim(),
-          file: { name: file.name, type: file.type, data },
+          file: { name: prepared.name, type: prepared.type, data },
         }),
       });
-      const result = await res.json();
+      const result = await res.json().catch(() => ({
+        error: res.status === 413 ? "File is too large to upload." : `Server error (${res.status}).`,
+      }));
       if (result.item) {
         setMovItems((prev) => [result.item, ...prev]);
         setMovNote("");

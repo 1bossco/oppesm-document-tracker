@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
-import { SESSION_COOKIE, isValidSession } from "@/lib/auth";
+import { ADMIN_NAME_COOKIE, SESSION_COOKIE, isValidSession } from "@/lib/auth";
 import {
   deleteDocument,
   getDocuments,
@@ -12,6 +12,11 @@ import { isBackendConnected } from "@/lib/sheet";
 async function requireSession() {
   const token = (await cookies()).get(SESSION_COOKIE)?.value;
   return isValidSession(token);
+}
+
+// Signed-in admin's name for the Audit Trail.
+async function adminName() {
+  return (await cookies()).get(ADMIN_NAME_COOKIE)?.value || "Admin";
 }
 
 const unauthorized = () => NextResponse.json({ error: "Not signed in." }, { status: 401 });
@@ -41,7 +46,7 @@ export async function PATCH(request: Request) {
       return NextResponse.json({ error: "Unknown field." }, { status: 400 });
     }
 
-    const result = await updateDocumentField(controlNo, field, value);
+    const result = await updateDocumentField(controlNo, field, value, await adminName());
     if (!result.ok) {
       return NextResponse.json({ error: result.error ?? "Could not update." }, { status: 502 });
     }
@@ -63,7 +68,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "A control number is required." }, { status: 400 });
     }
 
-    const result = await markAsPrinted(controlNo);
+    const result = await markAsPrinted(controlNo, await adminName());
     if (!result.ok) {
       return NextResponse.json({ error: result.error ?? "Could not update." }, { status: 502 });
     }
@@ -84,7 +89,7 @@ export async function DELETE(request: Request) {
       return NextResponse.json({ error: "A control number is required." }, { status: 400 });
     }
 
-    const result = await deleteDocument(controlNo);
+    const result = await deleteDocument(controlNo, await adminName());
     if (!result.ok) {
       return NextResponse.json({ error: result.error ?? "Could not delete." }, { status: 502 });
     }
