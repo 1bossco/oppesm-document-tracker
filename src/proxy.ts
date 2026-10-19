@@ -31,5 +31,6 @@ export const config = {
     "/api/audit/:path*",
     "/api/chat/:path*",
     "/api/mov/:path*",
+    "/api/processes/:path*",
   ],
 };

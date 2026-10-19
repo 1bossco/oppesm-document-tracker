@@ -7,8 +7,53 @@ import type { AuditEntry } from "@/lib/audit";
 import type { PrintData } from "@/lib/printing";
 import type { PublicStaff } from "@/lib/staff";
 import { TaskThread } from "@/components/TaskThread";
+import { ProcessPanel } from "@/components/ProcessPanel";
+import {
+  buildTimeline,
+  eventTime,
+  formatShortDate,
+  formatSpan,
+  shouldAutoComplete,
+  type Process,
+  type ProcessData,
+  type ProcessStatus,
+  type TimelineEvent,
+} from "@/lib/timeline";
 
-type View = "dashboard" | "documents" | "printing" | "audit";
+type View = "dashboard" | "documents" | "processes" | "printing" | "audit";
+type ProcessFilter = "open" | "completed" | "cancelled" | "all";
+
+const DAY = 86400000;
+
+interface ProcessRow {
+  p: Process;
+  events: TimelineEvent[];
+  docCount: number;
+  first: number;
+  last: TimelineEvent | undefined;
+  days: number;
+}
+
+function stageText(row: ProcessRow): string {
+  const last = row.last;
+  if (row.p.status !== "Open") return row.p.status;
+  if (!last) return "—";
+  const ago = formatSpan(Date.now() - last.time) + " ago";
+  if (last.kind !== "NOTE") return last.kind === "OUT" ? `Sent out · ${ago}` : `Received at OPPESM · ${ago}`;
+  const label = [last.note.office, last.note.note].filter(Boolean).join(": ");
+  return `${label || "Note"} · ${ago}`;
+}
+
+function chipLabel(ev: TimelineEvent): string {
+  const kind = ev.kind === "NOTE" ? ev.note.office || "Note" : ev.kind;
+  return `${kind} ${formatShortDate(ev.time)}`;
+}
+
+interface ProcessApiResult {
+  ok: boolean;
+  error?: string;
+  data?: { trackingNo?: string; id?: string; createdAt?: string };
+}
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
@@ -120,6 +165,7 @@ export function AdminDashboard({
   initialStats,
   initialAudit,
   initialPrintData,
+  initialProcesses,
   staff,
   adminName,
   connected,
@@ -128,6 +174,7 @@ export function AdminDashboard({
   initialStats: DashboardStats;
   initialAudit: AuditEntry[];
   initialPrintData: PrintData;
+  initialProcesses: ProcessData;
   staff: PublicStaff[];
   adminName: string;
   connected: boolean;
@@ -135,8 +182,19 @@ export function AdminDashboard({
   const router = useRouter();
   const [view, setView] = useState<View>("dashboard");
   const [docs, setDocs] = useState<TrackedDocument[]>(initialDocs);
-  const [audit] = useState<AuditEntry[]>(initialAudit);
-  const [printData] = useState<PrintData>(initialPrintData);
+  const [processData, setProcessData] = useState<ProcessData>(initialProcesses);
+  // When the server re-renders (↻ Refresh / router.refresh), take its fresh data.
+  const [syncedFrom, setSyncedFrom] = useState({ initialDocs, initialProcesses });
+  if (syncedFrom.initialDocs !== initialDocs || syncedFrom.initialProcesses !== initialProcesses) {
+    setSyncedFrom({ initialDocs, initialProcesses });
+    setDocs(initialDocs);
+    setProcessData(initialProcesses);
+  }
+  const audit = initialAudit;
+  const printData = initialPrintData;
+  const [openProcess, setOpenProcess] = useState<string | null>(null);
+  const [processFilter, setProcessFilter] = useState<ProcessFilter>("open");
+  const [processSearch, setProcessSearch] = useState("");
   const [search, setSearch] = useState("");
   const [docScope, setDocScope] = useState<"all" | "incoming" | "outgoing" | "followup" | "task">("all");
   const [progressFilter, setProgressFilter] = useState("");
@@ -167,7 +225,8 @@ export function AdminDashboard({
         d.controlNo.toLowerCase().includes(q) ||
         d.title.toLowerCase().includes(q) ||
         d.description.toLowerCase().includes(q) ||
-        d.staff.toLowerCase().includes(q)
+        d.staff.toLowerCase().includes(q) ||
+        d.trackingNo.toLowerCase().includes(q)
       );
     });
   }, [docs, search, docScope, progressFilter]);
@@ -175,6 +234,175 @@ export function AdminDashboard({
   function openDocs(scope: "all" | "incoming" | "outgoing" | "followup" | "task") {
     setDocScope(scope);
     setView("documents");
+  }
+
+  // ── Tracked processes ─────────────────────────────────────────────────────
+  const processRows = useMemo<ProcessRow[]>(() => {
+    const now = Date.now();
+    return processData.processes
+      .map((p) => {
+        const pdocs = docs.filter((d) => d.trackingNo === p.trackingNo);
+        const events = buildTimeline(pdocs, processData.notes.filter((n) => n.trackingNo === p.trackingNo));
+        const first = events[0]?.time || eventTime(p.createdAt);
+        const last = events[events.length - 1];
+        const end = p.status === "Open" ? now : eventTime(p.closedAt) || last?.time || now;
+        return { p, events, docCount: pdocs.length, first, last, days: Math.max(0, Math.floor((end - first) / DAY)) };
+      })
+      .filter((r) => r.docCount > 0) // every linked document deleted/unlinked → hide
+      .sort((a, b) => (b.last?.time || 0) - (a.last?.time || 0));
+  }, [processData, docs]);
+
+  const openProcessCount = useMemo(() => processRows.filter((r) => r.p.status === "Open").length, [processRows]);
+
+  const filteredProcesses = useMemo(() => {
+    const q = processSearch.trim().toLowerCase();
+    return processRows.filter((r) => {
+      if (processFilter === "open" && r.p.status !== "Open") return false;
+      if (processFilter === "completed" && r.p.status !== "Completed") return false;
+      if (processFilter === "cancelled" && r.p.status !== "Cancelled") return false;
+      if (!q) return true;
+      return (
+        r.p.trackingNo.toLowerCase().includes(q) ||
+        r.p.subject.toLowerCase().includes(q) ||
+        r.events.some((e) =>
+          e.kind === "NOTE"
+            ? `${e.note.office} ${e.note.note}`.toLowerCase().includes(q)
+            : `${e.doc.controlNo} ${e.doc.title}`.toLowerCase().includes(q)
+        )
+      );
+    });
+  }, [processRows, processFilter, processSearch]);
+
+  const officeSuggestions = useMemo(
+    () => Array.from(new Set(processData.notes.map((n) => n.office).filter(Boolean))).sort(),
+    [processData.notes]
+  );
+
+  async function postProcess(body: Record<string, unknown>): Promise<ProcessApiResult> {
+    try {
+      const res = await fetch("/api/processes", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const json = await res.json().catch(() => ({}));
+      return res.ok ? { ok: true, data: json.data } : { ok: false, error: json.error || "Could not save." };
+    } catch {
+      return { ok: false, error: "Could not reach the server." };
+    }
+  }
+
+  // Mirrors the backend's auto-complete rule after a document is marked Done.
+  function autoCompleteLocal(nextDocs: TrackedDocument[], controlNo: string) {
+    const doc = nextDocs.find((d) => d.controlNo === controlNo);
+    if (!doc?.trackingNo) return;
+    const proc = processData.processes.find((p) => p.trackingNo === doc.trackingNo);
+    if (!proc || proc.status !== "Open") return;
+    if (!shouldAutoComplete(nextDocs.filter((d) => d.trackingNo === doc.trackingNo))) return;
+    setProcessData((pd) => ({
+      ...pd,
+      processes: pd.processes.map((p) =>
+        p.trackingNo === doc.trackingNo ? { ...p, status: "Completed", closedAt: new Date().toISOString() } : p
+      ),
+    }));
+    flash("Process completed", `${doc.trackingNo} was completed automatically.`);
+  }
+
+  // Link `controlNo` into the process of `refRaw` (a control no. or tracking no.).
+  async function linkDoc(controlNo: string, refRaw: string) {
+    const ref = refRaw.trim().toUpperCase();
+    if (!ref) return;
+    const mov = docs.find((d) => d.controlNo.toUpperCase() === controlNo.toUpperCase());
+    if (!mov || mov.docType === "New Task") { flash("Error", "Only Incoming/Outgoing documents can be linked.", true); return; }
+    if (ref === mov.controlNo.toUpperCase()) { flash("Error", "A document can't be linked to itself.", true); return; }
+
+    let trackingNo: string;
+    let refControl = "";
+    let created: Process | null = null;
+    if (ref.startsWith("TR-")) {
+      const proc = processData.processes.find((p) => p.trackingNo.toUpperCase() === ref);
+      if (!proc) { flash("Error", `Tracking number not found: ${ref}`, true); return; }
+      trackingNo = proc.trackingNo;
+    } else {
+      const prev = docs.find((d) => d.controlNo.toUpperCase() === ref && d.docType !== "New Task");
+      if (!prev) { flash("Error", `Control number not found: ${ref}`, true); return; }
+      refControl = prev.controlNo;
+      trackingNo = prev.trackingNo || mov.trackingNo;
+      if (!trackingNo) {
+        // Placeholder until the backend assigns the real number.
+        trackingNo = `TR-NEW-${Date.now().toString().slice(-4)}`;
+        created = { trackingNo, subject: prev.title, status: "Open", createdAt: new Date().toISOString(), closedAt: "", createdBy: adminName };
+      }
+    }
+
+    const tn = trackingNo;
+    setDocs((prev) => prev.map((d) =>
+      d.controlNo === mov.controlNo || (d.controlNo === refControl && !d.trackingNo) ? { ...d, trackingNo: tn } : d
+    ));
+    setProcessData((pd) => ({
+      ...pd,
+      processes: [
+        ...(created ? [created] : []),
+        ...pd.processes.map((p) => (p.trackingNo === tn && p.status !== "Open" ? { ...p, status: "Open" as const, closedAt: "" } : p)),
+      ],
+    }));
+    setOpenProcess(tn);
+
+    if (!connected) { flash("Demo mode", `Linked to ${tn} locally, not saved.`); return; }
+    const res = await postProcess({ action: "link", controlNo: mov.controlNo, ref });
+    if (!res.ok) { flash("Error", res.error || "Could not link.", true); router.refresh(); return; }
+    const real = res.data?.trackingNo || tn;
+    if (real !== tn) {
+      setDocs((prev) => prev.map((d) => (d.trackingNo === tn ? { ...d, trackingNo: real } : d)));
+      setProcessData((pd) => ({ ...pd, processes: pd.processes.map((p) => (p.trackingNo === tn ? { ...p, trackingNo: real } : p)) }));
+      setOpenProcess(real);
+    }
+    flash("Linked", `${mov.controlNo} → ${real}`);
+    router.refresh();
+  }
+
+  function promptLink(controlNo: string) {
+    const ref = window.prompt(
+      `Link ${controlNo} to which document?\n\nEnter the earlier control no. (e.g. OG-261001-003) or a tracking no. (TR-…).`
+    );
+    if (ref) linkDoc(controlNo, ref);
+  }
+
+  async function unlinkDoc(controlNo: string) {
+    if (!window.confirm(`Remove ${controlNo} from this process? The document itself is kept.`)) return;
+    setDocs((prev) => prev.map((d) => (d.controlNo === controlNo ? { ...d, trackingNo: "" } : d)));
+    if (!connected) { flash("Demo mode", "Removed locally, not saved."); return; }
+    const res = await postProcess({ action: "unlink", controlNo });
+    if (!res.ok) { flash("Error", res.error || "Could not remove.", true); router.refresh(); }
+  }
+
+  async function addNote(trackingNo: string, office: string, note: string): Promise<boolean> {
+    const localId = `local-${Date.now()}`;
+    setProcessData((pd) => ({
+      ...pd,
+      notes: [...pd.notes, { id: localId, trackingNo, office, note, by: adminName, createdAt: new Date().toISOString() }],
+    }));
+    if (!connected) { flash("Demo mode", "Step added locally, not saved."); return true; }
+    const res = await postProcess({ action: "note", trackingNo, office, note });
+    if (!res.ok) {
+      setProcessData((pd) => ({ ...pd, notes: pd.notes.filter((n) => n.id !== localId) }));
+      flash("Error", res.error || "Could not add the step.", true);
+      return false;
+    }
+    return true;
+  }
+
+  async function setStatus(trackingNo: string, status: ProcessStatus) {
+    if (status === "Cancelled" && !window.confirm(`Cancel process ${trackingNo}? You can reopen it later.`)) return;
+    setProcessData((pd) => ({
+      ...pd,
+      processes: pd.processes.map((p) =>
+        p.trackingNo === trackingNo ? { ...p, status, closedAt: status === "Open" ? "" : new Date().toISOString() } : p
+      ),
+    }));
+    if (!connected) { flash("Demo mode", `Marked ${status.toLowerCase()} locally, not saved.`); return; }
+    const res = await postProcess({ action: "status", trackingNo, status });
+    if (!res.ok) { flash("Error", res.error || "Could not update.", true); router.refresh(); }
   }
 
   // Outgoing docs still waiting to be printed → the queue + the receiving sheet.
@@ -212,14 +440,18 @@ export function AdminDashboard({
 
   async function updateField(controlNo: string, field: "progress" | "statusDoc" | "printStatus", value: string) {
     // Optimistic local update so the UI stays responsive (and works in demo mode).
-    setDocs((prev) => prev.map((d) => (d.controlNo === controlNo ? { ...d, [field]: value } : d)));
+    const nextDocs = docs.map((d) => (d.controlNo === controlNo ? { ...d, [field]: value } : d));
+    setDocs(nextDocs);
+    if (field === "progress" && value === "Done") autoCompleteLocal(nextDocs, controlNo);
     if (!connected) { flash("Demo mode", "Change shown locally, not saved."); return; }
     const res = await callApi("PATCH", { controlNo, field, value });
     if (!res.ok) flash("Error", "Could not save the change.", true);
   }
 
   async function markPrinted(controlNo: string) {
-    setDocs((prev) => prev.map((d) => (d.controlNo === controlNo ? { ...d, printStatus: "Printed", progress: "Done", statusDoc: "Done" } : d)));
+    const nextDocs = docs.map((d) => (d.controlNo === controlNo ? { ...d, printStatus: "Printed", progress: "Done", statusDoc: "Done" } : d));
+    setDocs(nextDocs);
+    autoCompleteLocal(nextDocs, controlNo);
     if (!connected) { flash("Demo mode", "Marked printed locally, not saved."); return; }
     const res = await callApi("POST", { controlNo });
     if (!res.ok) flash("Error", "Could not mark as printed.", true);
@@ -274,6 +506,10 @@ export function AdminDashboard({
               <span className="ico">🚩</span> Follow-up
               {stats.followUp > 0 && <span className="nbadge orange show">{stats.followUp}</span>}
             </button>
+            <button className={"nav-item" + (view === "processes" ? " active" : "")} onClick={() => setView("processes")}>
+              <span className="ico">🔗</span> Processes
+              {openProcessCount > 0 && <span className="nbadge purple show">{openProcessCount}</span>}
+            </button>
             <button className={"nav-item" + (view === "documents" && docScope === "task" ? " active" : "")} onClick={() => openDocs("task")}>
               <span className="ico">✅</span> Tasks
               {taskCount > 0 && <span className="nbadge blue show">{taskCount}</span>}
@@ -309,6 +545,7 @@ export function AdminDashboard({
                     : docScope === "task"
                     ? "Tasks"
                     : "All Documents")}
+                {view === "processes" && "Tracked Processes"}
                 {view === "printing" && "For Printing"}
                 {view === "audit" && "Audit Trail"}
               </h1>
@@ -415,7 +652,14 @@ export function AdminDashboard({
                           const di = deadlineInfo(d);
                           return (
                           <tr key={d.controlNo}>
-                            <td className="mono">{d.controlNo}</td>
+                            <td className="mono">
+                              {d.controlNo}
+                              {d.trackingNo && (
+                                <button className="trk-chip" title="Open tracked process" onClick={() => setOpenProcess(d.trackingNo)}>
+                                  🔗 {d.trackingNo}
+                                </button>
+                              )}
+                            </td>
                             <td><span className={"badge " + (d.docType === "Incoming Docs" ? "badge-blue" : d.docType === "New Task" ? "badge-green" : "badge-purple")}>{d.docType === "Incoming Docs" ? "IN" : d.docType === "New Task" ? "TASK" : "OUT"}</span></td>
                             <td>{d.title}</td>
                             <td className="desc-cell" title={d.description}>
@@ -443,6 +687,9 @@ export function AdminDashboard({
                                     <button className="btn btn-outline btn-xs" title="Means of Verification" onClick={() => setThreadFor({ controlNo: d.controlNo, title: d.title, tab: "mov" })}>📎</button>
                                   </>
                                 )}
+                                {d.docType !== "New Task" && (
+                                  <button className="btn btn-outline btn-xs" title="Link to a tracked process" onClick={() => promptLink(d.controlNo)}>🔗</button>
+                                )}
                                 <button className="btn btn-danger btn-xs" onClick={() => removeDoc(d.controlNo)}>Delete</button>
                               </div>
                             </td>
@@ -457,6 +704,67 @@ export function AdminDashboard({
                   </div>
                 </div>
                 <div className="tcount">Showing {filtered.length} of {docs.length}</div>
+              </>
+            )}
+
+            {/* PROCESSES */}
+            {view === "processes" && (
+              <>
+                <div className="pr-intro">
+                  One row per paper, from start to finish. Link documents with <b>Continuation of</b> on the
+                  submission form, or the <b>🔗</b> button in the documents table.
+                </div>
+                <div className="tbar">
+                  <input className="sinput" placeholder="Search tracking no, subject, control no, office…" value={processSearch} onChange={(e) => setProcessSearch(e.target.value)} />
+                  <select className="fsel" value={processFilter} onChange={(e) => setProcessFilter(e.target.value as ProcessFilter)}>
+                    <option value="open">Open</option>
+                    <option value="completed">Completed</option>
+                    <option value="cancelled">Cancelled</option>
+                    <option value="all">All</option>
+                  </select>
+                </div>
+                <div className="twrap">
+                  <div style={{ overflowX: "auto" }}>
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Tracking No</th><th>Subject</th><th>Current Stage</th><th>Timeline</th><th>Days</th><th>Status</th><th></th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {filteredProcesses.map((r) => (
+                          <tr key={r.p.trackingNo} className="pr-row" onClick={() => setOpenProcess(r.p.trackingNo)}>
+                            <td className="mono pr-tn">{r.p.trackingNo}</td>
+                            <td>{r.p.subject || "—"}</td>
+                            <td className="pr-stage">{stageText(r)}</td>
+                            <td>
+                              <div className="pr-chips">
+                                {r.events.length > 6 && <span className="pr-more">+{r.events.length - 6} →</span>}
+                                {r.events.slice(-6).map((e, i) => (
+                                  <span key={i} className="pr-chip-wrap">
+                                    {i > 0 && <span className="pr-arrow">→</span>}
+                                    <span className={"pr-chip " + e.kind.toLowerCase()}>{chipLabel(e)}</span>
+                                  </span>
+                                ))}
+                              </div>
+                            </td>
+                            <td className="mono">{r.days}</td>
+                            <td>
+                              <span className={"badge " + (r.p.status === "Completed" ? "badge-green" : r.p.status === "Cancelled" ? "badge-gray" : "badge-blue")}>
+                                {r.p.status}
+                              </span>
+                            </td>
+                            <td><button className="btn btn-outline btn-xs">View</button></td>
+                          </tr>
+                        ))}
+                        {filteredProcesses.length === 0 && (
+                          <tr><td colSpan={7} style={{ textAlign: "center", color: "var(--text3)", padding: 24 }}>No tracked processes match.</td></tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+                <div className="tcount">Showing {filteredProcesses.length} of {processRows.length}</div>
               </>
             )}
 
@@ -618,6 +926,25 @@ export function AdminDashboard({
         </div>
       )}
 
+      {openProcess && (() => {
+        const proc = processData.processes.find((p) => p.trackingNo === openProcess);
+        if (!proc) return null;
+        return (
+          <ProcessPanel
+            process={proc}
+            docs={docs.filter((d) => d.trackingNo === proc.trackingNo)}
+            notes={processData.notes.filter((n) => n.trackingNo === proc.trackingNo)}
+            officeSuggestions={officeSuggestions}
+            connected={connected}
+            onClose={() => setOpenProcess(null)}
+            onAddNote={(office, note) => addNote(proc.trackingNo, office, note)}
+            onSetStatus={(status) => setStatus(proc.trackingNo, status)}
+            onUnlink={unlinkDoc}
+            onLink={(controlNo) => linkDoc(controlNo, proc.trackingNo)}
+          />
+        );
+      })()}
+
       {threadFor && (
         <TaskThread
           controlNo={threadFor.controlNo}
@@ -684,6 +1011,22 @@ const ADMIN_CSS = `
 .admin-scope .nbadge.orange { background: var(--orange); color: #fff; }
 .admin-scope .nbadge.yellow { background: var(--warn); color: #000; }
 .admin-scope .nbadge.blue { background: var(--accent); color: #fff; }
+.admin-scope .nbadge.purple { background: var(--purple); color: #fff; }
+.admin-scope .trk-chip { display: block; margin-top: 4px; background: rgba(167,139,250,.12); color: var(--purple); border: 1px solid rgba(167,139,250,.3); border-radius: 20px; padding: 1px 8px; font-family: "IBM Plex Mono", monospace; font-size: 10px; cursor: pointer; white-space: nowrap; }
+.admin-scope .trk-chip:hover { background: rgba(167,139,250,.22); }
+.admin-scope .pr-intro { font-size: 12px; color: var(--text2); margin-bottom: 12px; line-height: 1.5; }
+.admin-scope .pr-intro b { color: var(--text); }
+.admin-scope .pr-row { cursor: pointer; }
+.admin-scope .pr-tn { color: var(--purple); font-weight: 600; white-space: nowrap; }
+.admin-scope .pr-stage { color: var(--text2); min-width: 160px; }
+.admin-scope .pr-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 0; }
+.admin-scope .pr-chip-wrap { display: inline-flex; align-items: center; }
+.admin-scope .pr-arrow { color: var(--text3); font-size: 10px; margin: 0 4px; }
+.admin-scope .pr-more { color: var(--text3); font-size: 10px; margin-right: 4px; }
+.admin-scope .pr-chip { padding: 2px 7px; border-radius: 20px; font-size: 10px; font-weight: 700; white-space: nowrap; }
+.admin-scope .pr-chip.in { background: rgba(79,142,247,.15); color: var(--accent); }
+.admin-scope .pr-chip.out { background: rgba(167,139,250,.15); color: var(--purple); }
+.admin-scope .pr-chip.note { background: rgba(251,191,36,.12); color: var(--warn); font-weight: 600; }
 .admin-scope .sb-foot { padding: 14px 18px; border-top: 1px solid var(--border); }
 .admin-scope .sb-user { font-size: 11px; color: var(--text3); margin-bottom: 8px; }
 .admin-scope .sb-user b { color: var(--text2); font-weight: 600; }

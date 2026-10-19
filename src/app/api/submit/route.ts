@@ -13,6 +13,7 @@ export async function POST(request: Request) {
     processingTime?: string;
     dueDate?: string;
     addToCalendar?: boolean;
+    continuationOf?: string;
     files?: { name: string; type: string; data: string }[];
   };
   try {
@@ -31,6 +32,8 @@ export async function POST(request: Request) {
   const title = String(body.title ?? "").trim();
   const description = String(body.description ?? "").trim();
   const dueDate = String(body.dueDate ?? "").trim();
+  // Earlier control no. / tracking no. this paper continues (IN/OUT only).
+  const continuationOf = isTask ? "" : String(body.continuationOf ?? "").trim().toUpperCase();
   const files = Array.isArray(body.files) ? body.files : [];
   // Only names that exist in the Staff Directory are accepted.
   const requested = new Set(
@@ -72,6 +75,7 @@ export async function POST(request: Request) {
       demo: true,
       notified: staffEmails.length,
       calendar: addToCalendar,
+      trackingNo: continuationOf ? "TR-DEMO" : "",
     });
   }
 
@@ -84,6 +88,7 @@ export async function POST(request: Request) {
     addToCalendar,
     processingTime: String(body.processingTime ?? "").trim(),
     dueDate,
+    continuationOf,
     files,
   });
 
@@ -94,6 +99,6 @@ export async function POST(request: Request) {
     );
   }
 
-  const controlNo = (result.data as { controlNo?: string })?.controlNo ?? "";
-  return NextResponse.json({ success: true, controlNo });
+  const data = result.data as { controlNo?: string; trackingNo?: string } | undefined;
+  return NextResponse.json({ success: true, controlNo: data?.controlNo ?? "", trackingNo: data?.trackingNo ?? "" });
 }

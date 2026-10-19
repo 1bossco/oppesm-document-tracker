@@ -95,6 +95,25 @@ and, for **Incoming Docs**, tick **"Note this document to the PESO calendar."** 
 Demo mode previews the whole flow (multi-select, calendar checkbox), but no real emails or
 calendar events are sent until it's connected under the right account.
 
+## Tracked processes (Incoming ↔ Outgoing in one row)
+
+A paper that goes out, comes back, and goes out again (e.g. **Project Proposal → returned
+approved → PR & ObR → Budget Office**) still gets one Incoming/Outgoing record per movement,
+but all of them share a **Tracking No.** (`TR-yyMMdd-###`) and show up as **one row** on the
+admin **Processes** page, with a full timeline (time of each step, time spent at the other
+office, who handled it).
+
+- **Linking:** on the submission form, fill **Continuation of** with the earlier control no.
+  (or tracking no.). In the admin table, the **🔗** button links any existing document.
+- **Steps without a document** (e.g. "PR prepared", "ObR signed"): add them in the process
+  panel as *Office + Note*. The time is recorded automatically.
+- **Completion:** manual (*Mark complete* / *Cancel* / *Reopen*) **and** automatic — a process
+  completes when its latest document is an **Outgoing marked Done** (or printed) and it has at
+  least one earlier step. Linking a new step to a closed process reopens it.
+- **Storage:** column **M** ("Tracking No") of *Incoming Docs* / *Outgoing Docs* (added
+  automatically; column L is never touched), plus two new sheets: **Processes** and
+  **Process Notes**.
+
 ## Notes
 
 - Uploads are sent as base64 through the Next.js API, which Vercel caps at ~4.5 MB per

@@ -19,6 +19,8 @@ export interface TrackedDocument {
   statusDoc: string;
   progress: string;
   printStatus: string;
+  /** Tracking No (column M) linking IN/OUT movements into one process. Empty if not linked. */
+  trackingNo: string;
 }
 
 /** Raw row shape returned by the Apps Script backend (all strings). */
@@ -35,6 +37,7 @@ interface DocumentRow {
   statusDoc?: string;
   progress?: string;
   printStatus?: string;
+  trackingNo?: string;
 }
 
 function normalizeDocType(v: string): DocType {
@@ -60,6 +63,7 @@ function rowToDocument(row: DocumentRow): TrackedDocument | null {
     statusDoc: String(row.statusDoc ?? "").trim(),
     progress: String(row.progress ?? "").trim(),
     printStatus: String(row.printStatus ?? "").trim(),
+    trackingNo: String(row.trackingNo ?? "").trim(),
   };
 }
 
@@ -99,8 +103,14 @@ export function sampleTaskControlNos(): { onTrack: string; overdue: string } {
   return { onTrack: sampleControlNo("TK", 1, 1), overdue: sampleControlNo("TK", 4, 1) };
 }
 
+// The sample tracked process (Project Proposal → returned → PR & ObR out).
+export function sampleTrackingNo(): string {
+  return sampleControlNo("TR", 12, 1);
+}
+
 export function buildSampleDocuments(): TrackedDocument[] {
-  return [
+  const tr = sampleTrackingNo();
+  const docs: (Omit<TrackedDocument, "trackingNo"> & { trackingNo?: string })[] = [
     // On track — submitted today, 3-day window.
     {
       timestamp: sampleTimestamp(0, "09:12"), controlNo: sampleControlNo("IN", 0, 1),
@@ -157,7 +167,30 @@ export function buildSampleDocuments(): TrackedDocument[] {
       fileUrl: "#", staff: "Jose Cruz", processingTime: "", dueDate: sampleDueDate(-1),
       statusDoc: "Follow-up", progress: "In Progress", printStatus: "",
     },
+    // Sample tracked process — out for approval, came back, PR & ObR sent out.
+    {
+      timestamp: sampleTimestamp(12, "09:30"), controlNo: sampleControlNo("OG", 12, 1),
+      docType: "Outgoing Docs", title: "Project Proposal",
+      description: "Livelihood project proposal for PESO beneficiaries, submitted to the Governor's Office for approval.",
+      fileUrl: "#", staff: "Rovinnel Soriano", processingTime: "3 days", dueDate: "",
+      statusDoc: "Done", progress: "Done", printStatus: "Printed", trackingNo: tr,
+    },
+    {
+      timestamp: sampleTimestamp(6, "14:10"), controlNo: sampleControlNo("IN", 6, 1),
+      docType: "Incoming Docs", title: "Project Proposal",
+      description: "Approved project proposal returned from the Governor's Office, for PR and ObR preparation.",
+      fileUrl: "#", staff: "Rovinnel Soriano", processingTime: "3 days", dueDate: "",
+      statusDoc: "Done", progress: "Done", printStatus: "", trackingNo: tr,
+    },
+    {
+      timestamp: sampleTimestamp(1, "10:05"), controlNo: sampleControlNo("OG", 1, 1),
+      docType: "Outgoing Docs", title: "PR & ObR — Livelihood Project",
+      description: "Purchase Request and Obligation Request for the approved livelihood project, for the Budget Office.",
+      fileUrl: "#", staff: "Rovinnel Soriano", processingTime: "2 days", dueDate: "",
+      statusDoc: "In Progress", progress: "In Progress", printStatus: "For Printing", trackingNo: tr,
+    },
   ];
+  return docs.map((d) => ({ ...d, trackingNo: d.trackingNo ?? "" }));
 }
 
 /** All documents, newest first. Falls back to sample data when not connected. */
@@ -216,6 +249,7 @@ export interface SubmitPayload {
   addToCalendar: boolean; // Incoming Docs and Tasks
   processingTime: string;
   dueDate: string; // Tasks only (yyyy-MM-dd)
+  continuationOf: string; // earlier control no. / tracking no. (IN/OUT only)
   files: { name: string; type: string; data: string }[];
 }
 

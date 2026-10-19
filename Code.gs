@@ -18,11 +18,18 @@
 //
 // Sheets used (created automatically if missing):
 //   Incoming Docs · Outgoing Docs · Title of Document · Printing · Audit Trail
+//   Processes · Process Notes  (document tracking across IN/OUT movements)
+//
+// Column M of Incoming Docs / Outgoing Docs holds the Tracking No that links
+// several movements of the same paper into one process.
 // ════════════════════════════════════════════════════════════
 
 const SPREADSHEET_ID = "10z1k7InIQomQyq6pMoOF679fkPCzOT1iPtOIVjJl5Ks";
 const FOLDER_NAME    = "Uploaded_Documents";
 const TZ             = "Asia/Manila";
+
+const TRACK_COL = 13; // column M — Tracking No on Incoming/Outgoing Docs
+const MOVEMENT_SHEETS = ["Incoming Docs", "Outgoing Docs"];
 
 const DOC_HEADERS = [
   "timestamp", "controlNo", "docType", "title", "description",
@@ -41,6 +48,18 @@ function jsonOut_(payload) {
 function fmt_(value) {
   if (value instanceof Date) return Utilities.formatDate(value, TZ, "yyyy-MM-dd HH:mm");
   return value === null || value === undefined ? "" : String(value);
+}
+
+// Data rows (from row 2) padded to `cols` columns — a sheet may have fewer
+// columns than requested, which getRange would reject.
+function readRows_(sheet, cols) {
+  const n = sheet.getLastRow() - 1;
+  if (n < 1) return [];
+  const width = Math.min(cols, sheet.getMaxColumns());
+  return sheet.getRange(2, 1, n, width).getValues().map(function (r) {
+    while (r.length < cols) r.push("");
+    return r;
+  });
 }
 
 function getOrCreateFolder_(name) {
@@ -72,6 +91,7 @@ function doGet(e) {
     if (resource === "staff")     return jsonOut_(readStaff_());
     if (resource === "chat")      return jsonOut_(readChat_(e.parameter.controlNo));
     if (resource === "mov")       return jsonOut_(readMov_(e.parameter.controlNo));
+    if (resource === "processes") return jsonOut_(readProcesses_());
     return jsonOut_({ error: "Unknown resource: " + resource });
   } catch (err) {
     return jsonOut_({ error: err.message });
@@ -80,17 +100,17 @@ function doGet(e) {
 
 function readDocuments_() {
   const out = [];
-  ["Incoming Docs", "Outgoing Docs"].forEach(function (name) {
+  MOVEMENT_SHEETS.forEach(function (name) {
     const sheet = ss_().getSheetByName(name);
     if (!sheet || sheet.getLastRow() < 2) return;
-    const rows = sheet.getRange(2, 1, sheet.getLastRow() - 1, 11).getValues();
+    const rows = readRows_(sheet, TRACK_COL);
     rows.forEach(function (r) {
       if (!r[1]) return; // no control number → skip
       out.push({
         timestamp: fmt_(r[0]), controlNo: fmt_(r[1]), docType: fmt_(r[2]) || name,
         title: fmt_(r[3]), description: fmt_(r[4]), fileUrl: fmt_(r[5]),
         staff: fmt_(r[6]), processingTime: fmt_(r[7]), dueDate: "", statusDoc: fmt_(r[8]),
-        progress: fmt_(r[9]), printStatus: fmt_(r[10]),
+        progress: fmt_(r[9]), printStatus: fmt_(r[10]), trackingNo: fmt_(r[TRACK_COL - 1]),
       });
     });
   });
@@ -110,7 +130,7 @@ function readTasks_() {
         timestamp: fmt_(r[0]), controlNo: fmt_(r[1]), docType: "New Task",
         title: fmt_(r[3]), description: fmt_(r[4]), fileUrl: fmt_(r[5]),
         staff: fmt_(r[6]), processingTime: "", dueDate: fmtDate_(r[7]),
-        statusDoc: fmt_(r[8]), progress: fmt_(r[9]), printStatus: "",
+        statusDoc: fmt_(r[8]), progress: fmt_(r[9]), printStatus: "", trackingNo: "",
       };
     });
 }
@@ -231,6 +251,7 @@ function isoOrText_(value) {
 
 // ════════════════════════════════════════════════════════════
 // POST — actions: submit · updateStatus · markPrinted · delete · addChat · addMov
+//                linkDocument · unlinkDocument · addProcessNote · setProcessStatus
 // ════════════════════════════════════════════════════════════
 function doPost(e) {
   let payload;
@@ -246,6 +267,10 @@ function doPost(e) {
       case "delete":       return jsonOut_(deleteDocument_(payload));
       case "addChat":      return jsonOut_(addChat_(payload));
       case "addMov":       return jsonOut_(addMov_(payload));
+      case "linkDocument":     return jsonOut_(linkDocument_(payload));
+      case "unlinkDocument":   return jsonOut_(unlinkDocument_(payload));
+      case "addProcessNote":   return jsonOut_(addProcessNote_(payload));
+      case "setProcessStatus": return jsonOut_(setProcessStatusAction_(payload));
       default:             return jsonOut_({ success: false, error: "Unknown action." });
     }
   } catch (err) {
@@ -268,6 +293,13 @@ function submitDocument_(p) {
     const dateStr = Utilities.formatDate(timestamp, TZ, "yyMMdd");
     const sheet = isTask ? getTasksSheet_(ss) : ss.getSheetByName(docType);
     if (!sheet) throw new Error("Sheet not found: " + docType);
+
+    // "Continuation of" — an earlier control no. or tracking no. this paper
+    // belongs to. Checked before anything is written or uploaded.
+    const continuationOf = isTask ? "" : String(p.continuationOf || "").trim().toUpperCase();
+    if (continuationOf && !(isTrackingNo_(continuationOf) ? findProcess_(ss, continuationOf) : findMovement_(ss, continuationOf))) {
+      return { success: false, error: "Not found: " + continuationOf + ". Check the control number on the paper." };
+    }
 
     // Daily sequence — highest number used today + 1 (never reuses a deleted number).
     const seqNum = nextSeq_(sheet, prefix + "-" + dateStr);
@@ -320,6 +352,13 @@ function submitDocument_(p) {
 
     logAudit_(ss, "Submit", controlNo, "", "Submitted", p.staff || "User");
 
+    let trackingNo = "";
+    if (continuationOf) {
+      const mov = { sheet: sheet, row: sheet.getLastRow(), controlNo: controlNo, trackingNo: "" };
+      trackingNo = joinProcess_(ss, mov, continuationOf, p.staff || "Submission form");
+      logAudit_(ss, "Link to process", controlNo, "", trackingNo, p.staff || "Submission form");
+    }
+
     const emails = (p.staffEmails || []).filter(Boolean);
 
     // Calendar note (Incoming Docs and Tasks) — all-day event + reminder, staff as guests.
@@ -334,6 +373,7 @@ function submitDocument_(p) {
     return {
       success: true,
       controlNo: controlNo,
+      trackingNo: trackingNo,
       notified: notified,
       calendar: calendarOk,
       deadline: deadline ? Utilities.formatDate(deadline, TZ, "yyyy-MM-dd") : "",
@@ -431,9 +471,10 @@ function row_(label, value) {
     '</td><td style="padding:4px 0;font-weight:600">' + (value || "—") + '</td></tr>';
 }
 
-function nextSeq_(sheet, controlPrefix) {
+// `col` is the column holding the IDs (default 2 = Control No).
+function nextSeq_(sheet, controlPrefix, col) {
   if (sheet.getLastRow() < 2) return 1;
-  const ids = sheet.getRange(2, 2, sheet.getLastRow() - 1, 1).getValues();
+  const ids = sheet.getRange(2, col || 2, sheet.getLastRow() - 1, 1).getValues();
   let max = 0;
   ids.forEach(function (r) {
     const id = String(r[0]);
@@ -491,6 +532,7 @@ function updateStatus_(p) {
       const oldVal = data[idx][col - 1];
       sheet.getRange(sheetRow, col).setValue(p.value);
       logAudit_(ss, "Update " + p.field, p.controlNo, oldVal, p.value, p.user || "Admin");
+      if (p.field === "progress" && p.value === "Done") autoCompleteFor_(ss, p.controlNo, p.user || "Admin");
       return { success: true };
     }
   }
@@ -511,6 +553,7 @@ function markPrinted_(p) {
   sheet.getRange(sheetRow, 10).setValue("Done");    // progress
   sheet.getRange(sheetRow, 11).setValue("Printed"); // printStatus
   logAudit_(ss, "Mark Printed", p.controlNo, "For Printing", "Printed → Done", p.user || "Admin");
+  autoCompleteFor_(ss, p.controlNo, p.user || "Admin");
   return { success: true };
 }
 
@@ -571,6 +614,205 @@ function addMov_(p) {
   const id = "mov-" + Date.now();
   sheet.appendRow([id, controlNo, p.uploadedBy || "Unknown", file.name, fileUrl, p.note || "", new Date()]);
   return { success: true, id: id, fileUrl: fileUrl };
+}
+
+// ════════════════════════════════════════════════════════════
+// PROCESSES — one tracked process spans several IN/OUT movements
+//   Processes:     Tracking No | Subject | Status | Created At | Closed At | Created By
+//   Process Notes: Id | Tracking No | Office | Note | By | Created At
+// Status: Open · Completed · Cancelled
+// ════════════════════════════════════════════════════════════
+function isTrackingNo_(ref) { return /^TR-/i.test(String(ref)); }
+
+function getProcessesSheet_(ss) {
+  let sheet = ss.getSheetByName("Processes");
+  if (!sheet) {
+    sheet = ss.insertSheet("Processes");
+    sheet.appendRow(["Tracking No", "Subject", "Status", "Created At", "Closed At", "Created By"]);
+  }
+  return sheet;
+}
+function getProcessNotesSheet_(ss) {
+  let sheet = ss.getSheetByName("Process Notes");
+  if (!sheet) {
+    sheet = ss.insertSheet("Process Notes");
+    sheet.appendRow(["Id", "Tracking No", "Office", "Note", "By", "Created At"]);
+  }
+  return sheet;
+}
+
+function readProcesses_() {
+  const ss = ss_();
+  const ps = ss.getSheetByName("Processes");
+  const ns = ss.getSheetByName("Process Notes");
+  const processes = ps ? readRows_(ps, 6).filter(function (r) { return r[0]; }).map(function (r) {
+    return { trackingNo: fmt_(r[0]), subject: fmt_(r[1]), status: fmt_(r[2]) || "Open", createdAt: isoOrText_(r[3]), closedAt: isoOrText_(r[4]), createdBy: fmt_(r[5]) };
+  }) : [];
+  const notes = ns ? readRows_(ns, 6).filter(function (r) { return r[1]; }).map(function (r) {
+    return { id: fmt_(r[0]), trackingNo: fmt_(r[1]), office: fmt_(r[2]), note: fmt_(r[3]), by: fmt_(r[4]), createdAt: isoOrText_(r[5]) };
+  }) : [];
+  return { processes: processes, notes: notes };
+}
+
+// The Incoming/Outgoing row for a control number (upper-case), or null.
+function findMovement_(ss, controlNo) {
+  for (let n = 0; n < MOVEMENT_SHEETS.length; n++) {
+    const sheet = ss.getSheetByName(MOVEMENT_SHEETS[n]);
+    if (!sheet || sheet.getLastRow() < 2) continue;
+    const rows = readRows_(sheet, TRACK_COL);
+    const idx = rows.findIndex(function (r) { return String(r[1]).toUpperCase() === controlNo; });
+    if (idx !== -1) {
+      return { sheet: sheet, row: idx + 2, controlNo: String(rows[idx][1]), title: fmt_(rows[idx][3]), trackingNo: fmt_(rows[idx][TRACK_COL - 1]) };
+    }
+  }
+  return null;
+}
+
+function findProcess_(ss, trackingNo) {
+  const sheet = ss.getSheetByName("Processes");
+  if (!sheet || sheet.getLastRow() < 2) return null;
+  const rows = readRows_(sheet, 6);
+  const want = String(trackingNo).toUpperCase();
+  const idx = rows.findIndex(function (r) { return String(r[0]).toUpperCase() === want; });
+  return idx === -1 ? null : { sheet: sheet, row: idx + 2, trackingNo: String(rows[idx][0]), status: fmt_(rows[idx][2]) || "Open" };
+}
+
+// Writes the Tracking No into column M, adding columns / the header if needed.
+function setTrackingNo_(sheet, row, trackingNo) {
+  if (sheet.getMaxColumns() < TRACK_COL) {
+    sheet.insertColumnsAfter(sheet.getMaxColumns(), TRACK_COL - sheet.getMaxColumns());
+  }
+  if (!sheet.getRange(1, TRACK_COL).getValue()) sheet.getRange(1, TRACK_COL).setValue("Tracking No");
+  sheet.getRange(row, TRACK_COL).setValue(trackingNo);
+}
+
+function createProcess_(ss, subject, user) {
+  const sheet = getProcessesSheet_(ss);
+  const prefix = "TR-" + Utilities.formatDate(new Date(), TZ, "yyMMdd");
+  const trackingNo = prefix + "-" + String(nextSeq_(sheet, prefix, 1)).padStart(3, "0");
+  sheet.appendRow([trackingNo, subject, "Open", new Date(), "", user]);
+  logAudit_(ss, "Create process", trackingNo, "", subject, user);
+  return trackingNo;
+}
+
+function setProcessStatus_(ss, trackingNo, status, user, action) {
+  const proc = findProcess_(ss, trackingNo);
+  if (!proc) return false;
+  if (proc.status === status) return true;
+  proc.sheet.getRange(proc.row, 3).setValue(status);
+  proc.sheet.getRange(proc.row, 5).setValue(status === "Open" ? "" : new Date());
+  logAudit_(ss, action, proc.trackingNo, proc.status, status, user);
+  return true;
+}
+
+// Puts movement `mov` ({sheet, row, controlNo, trackingNo}) into the process
+// named by `ref` — a tracking no., or another document's control no. If that
+// document isn't in a process yet, it joins mov's process, or a new one is
+// created. Returns the tracking no. Caller must hold the script lock.
+function joinProcess_(ss, mov, ref, user) {
+  ref = String(ref).trim().toUpperCase();
+  if (ref === String(mov.controlNo).toUpperCase()) throw new Error("A document can't be linked to itself.");
+
+  let trackingNo;
+  if (isTrackingNo_(ref)) {
+    const proc = findProcess_(ss, ref);
+    if (!proc) throw new Error("Tracking number not found: " + ref);
+    trackingNo = proc.trackingNo;
+  } else {
+    const prev = findMovement_(ss, ref);
+    if (!prev) throw new Error("Control number not found: " + ref);
+    trackingNo = prev.trackingNo || mov.trackingNo || createProcess_(ss, prev.title, user);
+    if (!prev.trackingNo) setTrackingNo_(prev.sheet, prev.row, trackingNo);
+  }
+  setTrackingNo_(mov.sheet, mov.row, trackingNo);
+
+  // A new step on a closed process reopens it.
+  const proc = findProcess_(ss, trackingNo);
+  if (proc && proc.status !== "Open") setProcessStatus_(ss, trackingNo, "Open", user, "Reopen process");
+  return trackingNo;
+}
+
+// Auto-complete: an open process closes when its latest step is an Outgoing
+// document marked Done and it has at least one earlier step (the paper came
+// back at least once, or the process started as Incoming).
+function autoCompleteFor_(ss, controlNo, user) {
+  try {
+    const mov = findMovement_(ss, String(controlNo).toUpperCase());
+    if (!mov || !mov.trackingNo) return;
+    const proc = findProcess_(ss, mov.trackingNo);
+    if (!proc || proc.status !== "Open") return;
+
+    const steps = [];
+    MOVEMENT_SHEETS.forEach(function (name) {
+      const sheet = ss.getSheetByName(name);
+      if (!sheet || sheet.getLastRow() < 2) return;
+      readRows_(sheet, TRACK_COL).forEach(function (r) {
+        if (r[1] && fmt_(r[TRACK_COL - 1]) === mov.trackingNo) {
+          const t = r[0] instanceof Date ? r[0].getTime() : new Date(r[0]).getTime();
+          steps.push({ time: t || 0, sheet: name, progress: String(r[9]) });
+        }
+      });
+    });
+    if (steps.length < 2) return;
+    steps.sort(function (a, b) { return a.time - b.time; });
+    const last = steps[steps.length - 1];
+    if (last.sheet === "Outgoing Docs" && last.progress === "Done") {
+      setProcessStatus_(ss, mov.trackingNo, "Completed", user, "Auto-complete process");
+    }
+  } catch (err) {
+    Logger.log("autoComplete error: " + err.message);
+  }
+}
+
+// ── Process actions ──────────────────────────────────────────
+function linkDocument_(p) {
+  const controlNo = String(p.controlNo || "").trim().toUpperCase();
+  const ref = String(p.ref || "").trim().toUpperCase();
+  if (!controlNo || !ref) return { success: false, error: "Both a document and what to link it to are required." };
+
+  const lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    const ss = ss_();
+    const mov = findMovement_(ss, controlNo);
+    if (!mov) return { success: false, error: "Only Incoming/Outgoing documents can be linked." };
+    const trackingNo = joinProcess_(ss, mov, ref, p.user || "Admin");
+    logAudit_(ss, "Link to process", mov.controlNo, mov.trackingNo, trackingNo, p.user || "Admin");
+    return { success: true, trackingNo: trackingNo };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function unlinkDocument_(p) {
+  const ss = ss_();
+  const mov = findMovement_(ss, String(p.controlNo || "").trim().toUpperCase());
+  if (!mov) return { success: false, error: "Document not found." };
+  if (!mov.trackingNo) return { success: true };
+  mov.sheet.getRange(mov.row, TRACK_COL).setValue("");
+  logAudit_(ss, "Unlink from process", mov.controlNo, mov.trackingNo, "", p.user || "Admin");
+  return { success: true };
+}
+
+function addProcessNote_(p) {
+  const office = String(p.office || "").trim();
+  const note = String(p.note || "").trim();
+  if (!office && !note) return { success: false, error: "Enter an office or a note." };
+  const ss = ss_();
+  const proc = findProcess_(ss, String(p.trackingNo || "").trim());
+  if (!proc) return { success: false, error: "Process not found." };
+  const id = "pn-" + Date.now();
+  const createdAt = new Date();
+  getProcessNotesSheet_(ss).appendRow([id, proc.trackingNo, office, note, p.user || "Admin", createdAt]);
+  logAudit_(ss, "Process note", proc.trackingNo, "", (office ? office + ": " : "") + note, p.user || "Admin");
+  return { success: true, id: id, createdAt: createdAt.toISOString() };
+}
+
+function setProcessStatusAction_(p) {
+  const status = String(p.status || "");
+  if (["Open", "Completed", "Cancelled"].indexOf(status) === -1) return { success: false, error: "Unknown status." };
+  const ok = setProcessStatus_(ss_(), String(p.trackingNo || "").trim(), status, p.user || "Admin", "Process " + status.toLowerCase());
+  return ok ? { success: true } : { success: false, error: "Process not found." };
 }
 
 // ── Audit log ────────────────────────────────────────────────

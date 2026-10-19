@@ -4,6 +4,7 @@ import { getDocuments, computeStats } from "@/lib/documents";
 import { getAuditTrail } from "@/lib/audit";
 import { getPrintData } from "@/lib/printing";
 import { getStaff, toPublicStaff } from "@/lib/staff";
+import { getProcessData } from "@/lib/processes";
 import { isBackendConnected } from "@/lib/sheet";
 import { ADMIN_NAME_COOKIE } from "@/lib/auth";
 import { AdminDashboard } from "@/components/AdminDashboard";
@@ -15,11 +16,12 @@ export default async function AdminPage() {
   const adminName = (await cookies()).get(ADMIN_NAME_COOKIE)?.value;
   if (!adminName) redirect("/login");
 
-  const [docs, audit, printData, staff] = await Promise.all([
+  const [docs, audit, printData, staff, processes] = await Promise.all([
     getDocuments(),
     getAuditTrail(),
     getPrintData(),
     getStaff(),
+    getProcessData(),
   ]);
   const stats = computeStats(docs);
 
@@ -29,6 +31,7 @@ export default async function AdminPage() {
       initialStats={stats}
       initialAudit={audit}
       initialPrintData={printData}
+      initialProcesses={processes}
       staff={toPublicStaff(staff)}
       adminName={adminName}
       connected={isBackendConnected()}

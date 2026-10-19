@@ -25,6 +25,8 @@ export function SubmitForm({
   const [addToCalendar, setAddToCalendar] = useState(false);
   const [processingTime, setProcessingTime] = useState("");
   const [dueDate, setDueDate] = useState("");
+  const [continuationOf, setContinuationOf] = useState("");
+  const [trackingNo, setTrackingNo] = useState("");
   const [files, setFiles] = useState<PreparedFile[]>([]);
   const [previews, setPreviews] = useState<{ kind: "img" | "file"; url?: string; name: string; ext: string; ico: string }[]>([]);
   const [status, setStatus] = useState("");
@@ -111,6 +113,7 @@ export function SubmitForm({
 
     setBusy(true);
     setControlNo("");
+    setTrackingNo("");
 
     try {
       const payloadFiles: { name: string; type: string; data: string }[] = [];
@@ -132,6 +135,7 @@ export function SubmitForm({
           addToCalendar: showCalendar && addToCalendar,
           processingTime,
           dueDate: isTask ? dueDate : "",
+          continuationOf: isTask ? "" : continuationOf.trim(),
           files: payloadFiles,
         }),
       });
@@ -142,7 +146,9 @@ export function SubmitForm({
       setStatus("");
       if (result.success) {
         setControlNo(result.controlNo);
+        setTrackingNo(result.trackingNo || "");
         const extras: string[] = [];
+        if (result.trackingNo) extras.push(`linked to ${result.trackingNo}`);
         if (selectedStaff.length) extras.push(`${selectedStaff.length} staff notified`);
         if (showCalendar && addToCalendar) extras.push("added to calendar");
         const suffix = extras.length ? " · " + extras.join(" · ") : "";
@@ -172,6 +178,7 @@ export function SubmitForm({
     setAddToCalendar(false);
     setProcessingTime("");
     setDueDate("");
+    setContinuationOf("");
     setFiles([]);
     setPreviews([]);
     if (cameraRef.current) cameraRef.current.value = "";
@@ -191,6 +198,7 @@ export function SubmitForm({
                 Document Submitted
               </div>
               <div className="cn">{controlNo}</div>
+              {trackingNo && <div className="tn">Process {trackingNo}</div>}
             </div>
           </div>
         )}
@@ -259,6 +267,23 @@ export function SubmitForm({
             placeholder={isTask ? "Describe the task, what needs to be done, and any details…" : "Enter document details, references, and purpose..."}
           />
         </div>
+
+        {docType && !isTask && (
+          <div className="form-group">
+            <label>Continuation of <span className="optional">(optional)</span></label>
+            <input
+              type="text"
+              className="mono-input"
+              value={continuationOf}
+              onChange={(e) => setContinuationOf(e.target.value.toUpperCase())}
+              placeholder="e.g. OG-261001-003 or TR-261001-001"
+            />
+            <div className="field-hint">
+              Is this paper coming back or moving on from an earlier entry? Enter its control number (or tracking number)
+              to keep every step in one tracked process.
+            </div>
+          </div>
+        )}
 
         <div className="form-group">
           <label>PESO Staff Assigned</label>
@@ -457,6 +482,9 @@ const FORM_CSS = `
 .submit-scope .btn-submit:hover:not(:disabled) { opacity: .9; transform: translateY(-1px); }
 .submit-scope .btn-submit:disabled { opacity: .4; cursor: not-allowed; }
 .submit-scope .control-no-badge { display: flex; align-items: center; gap: 10px; background: rgba(110,231,183,0.1); border: 1px solid rgba(110,231,183,0.3); border-radius: 8px; padding: 12px 16px; margin-bottom: 20px; font-size: 13px; color: var(--accent2); }
+.submit-scope .control-no-badge .tn { font-family: "IBM Plex Mono", monospace; font-size: 12px; opacity: .85; margin-top: 2px; }
+.submit-scope .mono-input { font-family: "IBM Plex Mono", monospace !important; letter-spacing: .5px; }
+.submit-scope .field-hint { margin-top: 6px; font-size: 11px; color: var(--text2); line-height: 1.45; }
 .submit-scope .control-no-badge .cn { font-family: "IBM Plex Mono", monospace; font-weight: 700; font-size: 15px; }
 .submit-scope .progress-bar { height: 3px; background: var(--border); border-radius: 2px; margin-bottom: 20px; overflow: hidden; }
 .submit-scope .progress-bar::after { content: ''; display: block; height: 100%; width: 30%; background: linear-gradient(90deg, var(--accent), var(--accent2)); border-radius: 2px; animation: oppesm-progress 1.4s ease-in-out infinite; }
