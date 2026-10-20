@@ -21,6 +21,8 @@ export interface TrackedDocument {
   printStatus: string;
   /** Tracking No (column M) linking IN/OUT movements into one process. Empty if not linked. */
   trackingNo: string;
+  /** Gmail thread ID for Incoming "Email" documents. Empty if not linked. */
+  emailThreadId: string;
 }
 
 /** Raw row shape returned by the Apps Script backend (all strings). */
@@ -38,6 +40,7 @@ interface DocumentRow {
   progress?: string;
   printStatus?: string;
   trackingNo?: string;
+  emailThreadId?: string;
 }
 
 function normalizeDocType(v: string): DocType {
@@ -64,6 +67,7 @@ function rowToDocument(row: DocumentRow): TrackedDocument | null {
     progress: String(row.progress ?? "").trim(),
     printStatus: String(row.printStatus ?? "").trim(),
     trackingNo: String(row.trackingNo ?? "").trim(),
+    emailThreadId: String(row.emailThreadId ?? "").trim(),
   };
 }
 
@@ -108,9 +112,14 @@ export function sampleTrackingNo(): string {
   return sampleControlNo("TR", 12, 1);
 }
 
+// The sample Incoming "Email" document (linked to a sample Gmail thread).
+export function sampleEmailControlNo(): string {
+  return sampleControlNo("IN", 2, 1);
+}
+
 export function buildSampleDocuments(): TrackedDocument[] {
   const tr = sampleTrackingNo();
-  const docs: (Omit<TrackedDocument, "trackingNo"> & { trackingNo?: string })[] = [
+  const docs: (Omit<TrackedDocument, "trackingNo" | "emailThreadId"> & { trackingNo?: string; emailThreadId?: string })[] = [
     // On track — submitted today, 3-day window.
     {
       timestamp: sampleTimestamp(0, "09:12"), controlNo: sampleControlNo("IN", 0, 1),
@@ -189,8 +198,16 @@ export function buildSampleDocuments(): TrackedDocument[] {
       fileUrl: "#", staff: "Rovinnel Soriano", processingTime: "2 days", dueDate: "",
       statusDoc: "In Progress", progress: "In Progress", printStatus: "For Printing", trackingNo: tr,
     },
+    // Sample email — read and reply from the dashboard (✉️).
+    {
+      timestamp: sampleTimestamp(2, "08:52"), controlNo: sampleEmailControlNo(),
+      docType: "Incoming Docs", title: "Email",
+      description: "Inquiry from Juan Dela Cruz about the SPES application schedule and requirements.",
+      fileUrl: "#", staff: "Soriano, Rovinnel Manuel", processingTime: "3 days", dueDate: "",
+      statusDoc: "In Progress", progress: "In Progress", printStatus: "", emailThreadId: "demo-thread",
+    },
   ];
-  return docs.map((d) => ({ ...d, trackingNo: d.trackingNo ?? "" }));
+  return docs.map((d) => ({ ...d, trackingNo: d.trackingNo ?? "", emailThreadId: d.emailThreadId ?? "" }));
 }
 
 /** All documents, newest first. Falls back to sample data when not connected. */
@@ -250,6 +267,9 @@ export interface SubmitPayload {
   processingTime: string;
   dueDate: string; // Tasks only (yyyy-MM-dd)
   continuationOf: string; // earlier control no. / tracking no. (IN/OUT only)
+  emailFrom: string; // Incoming "Email": sender address used to find the Gmail thread
+  emailSubject: string;
+  emailLink: string; // optional Gmail link (old-style links carry the thread id)
   files: { name: string; type: string; data: string }[];
 }
 

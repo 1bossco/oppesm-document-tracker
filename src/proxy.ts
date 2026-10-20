@@ -32,5 +32,6 @@ export const config = {
     "/api/chat/:path*",
     "/api/mov/:path*",
     "/api/processes/:path*",
+    "/api/email/:path*",
   ],
 };

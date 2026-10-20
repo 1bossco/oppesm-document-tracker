@@ -8,6 +8,8 @@ import type { PrintData } from "@/lib/printing";
 import type { PublicStaff } from "@/lib/staff";
 import { TaskThread } from "@/components/TaskThread";
 import { ProcessPanel } from "@/components/ProcessPanel";
+import { EmailPanel } from "@/components/EmailPanel";
+import { isEmailTitle, signatureFor } from "@/lib/email-types";
 import {
   buildTimeline,
   eventTime,
@@ -193,6 +195,8 @@ export function AdminDashboard({
   const audit = initialAudit;
   const printData = initialPrintData;
   const [openProcess, setOpenProcess] = useState<string | null>(null);
+  const [emailFor, setEmailFor] = useState<string | null>(null);
+  const mySignature = signatureFor(adminName, staff.find((s) => s.name === adminName)?.position ?? "");
   const [processFilter, setProcessFilter] = useState<ProcessFilter>("open");
   const [processSearch, setProcessSearch] = useState("");
   const [search, setSearch] = useState("");
@@ -687,6 +691,9 @@ export function AdminDashboard({
                                     <button className="btn btn-outline btn-xs" title="Means of Verification" onClick={() => setThreadFor({ controlNo: d.controlNo, title: d.title, tab: "mov" })}>📎</button>
                                   </>
                                 )}
+                                {d.docType === "Incoming Docs" && (d.emailThreadId || isEmailTitle(d.title)) && (
+                                  <button className="btn btn-outline btn-xs" title="Read & reply to the email" onClick={() => setEmailFor(d.controlNo)}>✉️</button>
+                                )}
                                 {d.docType !== "New Task" && (
                                   <button className="btn btn-outline btn-xs" title="Link to a tracked process" onClick={() => promptLink(d.controlNo)}>🔗</button>
                                 )}
@@ -941,6 +948,27 @@ export function AdminDashboard({
             onSetStatus={(status) => setStatus(proc.trackingNo, status)}
             onUnlink={unlinkDoc}
             onLink={(controlNo) => linkDoc(controlNo, proc.trackingNo)}
+          />
+        );
+      })()}
+
+      {emailFor && (() => {
+        const doc = docs.find((d) => d.controlNo === emailFor);
+        if (!doc) return null;
+        return (
+          <EmailPanel
+            doc={doc}
+            adminName={adminName}
+            signature={mySignature}
+            connected={connected}
+            onClose={() => setEmailFor(null)}
+            onLinked={() => { if (connected) router.refresh(); }}
+            onReplySent={(r) => {
+              if (!connected) { flash("Demo mode", "Reply shown locally — nothing was sent."); return; }
+              if (r.warning) flash("Reply sent", r.warning, true);
+              else flash("Reply sent ✓", `Recorded as ${r.controlNo}${r.trackingNo ? " · " + r.trackingNo : ""}`);
+              router.refresh();
+            }}
           />
         );
       })()}

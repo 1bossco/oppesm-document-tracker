@@ -114,6 +114,32 @@ office, who handled it).
   automatically; column L is never touched), plus two new sheets: **Processes** and
   **Process Notes**.
 
+## Email documents (read & reply from the tracker)
+
+When an **Incoming Docs** entry has the title **Email**, the form asks for the **sender's
+email address** (optional subject, or an old-style Gmail link). The latest matching
+conversation in the **peso@bataan.gov.ph** mailbox is linked to the record, and the email
+text + attachments are saved to its Drive folder — no file upload needed.
+
+In the admin table, the **✉️** button opens the conversation. Staff read it and reply
+without opening Gmail:
+
+- The reply is sent **from peso@bataan.gov.ph, inside the same Gmail thread** (Reply or
+  Reply all, optional attachments up to 3 MB), signed with the sender's **name and
+  position** from the Staff Directory.
+- It's recorded as an **Outgoing "Email Reply"** document (Done, never in the printing
+  queue), linked to the Incoming email in one **tracked process**, and logged in the Audit
+  Trail.
+- Anyone signed in can reply; staff who aren't assigned to the document are asked to confirm.
+- **Change email** re-links a document to a different conversation from the same sender.
+
+Links are stored in a new **Email Threads** sheet.
+
+**Setup (one time, as peso@bataan.gov.ph):** paste the new `Code.gs`, select
+**`authorizeGmail`** in the function dropdown → **Run** → approve the Gmail permission, *then*
+deploy a new version. (Deploying before authorizing can make the backend reject requests.)
+The script then has full access to the PESO mailbox, so keep `ADMIN_PASSWORD` strong.
+
 ## Notes
 
 - Uploads are sent as base64 through the Next.js API, which Vercel caps at ~4.5 MB per

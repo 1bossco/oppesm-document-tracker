@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { submitDocument, type DocType } from "@/lib/documents";
 import { isBackendConnected } from "@/lib/sheet";
 import { getStaff } from "@/lib/staff";
+import { EMAIL_PATTERN, isEmailTitle } from "@/lib/email-types";
 
 // Public endpoint — anyone with the link can submit a document or task.
 export async function POST(request: Request) {
@@ -14,6 +15,9 @@ export async function POST(request: Request) {
     dueDate?: string;
     addToCalendar?: boolean;
     continuationOf?: string;
+    emailFrom?: string;
+    emailSubject?: string;
+    emailLink?: string;
     files?: { name: string; type: string; data: string }[];
   };
   try {
@@ -35,6 +39,11 @@ export async function POST(request: Request) {
   // Earlier control no. / tracking no. this paper continues (IN/OUT only).
   const continuationOf = isTask ? "" : String(body.continuationOf ?? "").trim().toUpperCase();
   const files = Array.isArray(body.files) ? body.files : [];
+  // Incoming "Email": the Gmail conversation is found by sender (or link).
+  const isEmail = docType === "Incoming Docs" && isEmailTitle(title);
+  const emailFrom = isEmail ? String(body.emailFrom ?? "").trim() : "";
+  const emailSubject = isEmail ? String(body.emailSubject ?? "").trim() : "";
+  const emailLink = isEmail ? String(body.emailLink ?? "").trim() : "";
   // Only names that exist in the Staff Directory are accepted.
   const requested = new Set(
     (Array.isArray(body.staff) ? body.staff : []).map((n) => String(n ?? "").trim()).filter(Boolean)
@@ -52,8 +61,17 @@ export async function POST(request: Request) {
       { status: 400 }
     );
   }
-  // Files required for documents, optional for tasks.
-  if (!isTask && files.length === 0) {
+  if (isEmail && !emailFrom && !emailLink) {
+    return NextResponse.json(
+      { success: false, error: "Enter the sender's email address (or a Gmail link)." },
+      { status: 400 }
+    );
+  }
+  if (emailFrom && !EMAIL_PATTERN.test(emailFrom)) {
+    return NextResponse.json({ success: false, error: "That sender email address isn't valid." }, { status: 400 });
+  }
+  // Files required for documents (the email itself counts), optional for tasks.
+  if (!isTask && !isEmail && files.length === 0) {
     return NextResponse.json(
       { success: false, error: "Please attach at least one file." },
       { status: 400 }
@@ -76,6 +94,7 @@ export async function POST(request: Request) {
       notified: staffEmails.length,
       calendar: addToCalendar,
       trackingNo: continuationOf ? "TR-DEMO" : "",
+      emailLinked: isEmail,
     });
   }
 
@@ -89,6 +108,9 @@ export async function POST(request: Request) {
     processingTime: String(body.processingTime ?? "").trim(),
     dueDate,
     continuationOf,
+    emailFrom,
+    emailSubject,
+    emailLink,
     files,
   });
 
@@ -99,6 +121,11 @@ export async function POST(request: Request) {
     );
   }
 
-  const data = result.data as { controlNo?: string; trackingNo?: string } | undefined;
-  return NextResponse.json({ success: true, controlNo: data?.controlNo ?? "", trackingNo: data?.trackingNo ?? "" });
+  const data = result.data as { controlNo?: string; trackingNo?: string; emailLinked?: boolean } | undefined;
+  return NextResponse.json({
+    success: true,
+    controlNo: data?.controlNo ?? "",
+    trackingNo: data?.trackingNo ?? "",
+    emailLinked: data?.emailLinked === true,
+  });
 }

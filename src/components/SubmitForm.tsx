@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { TitleOption } from "@/lib/titles";
 import type { PublicStaff } from "@/lib/staff";
+import { EMAIL_PATTERN, isEmailTitle } from "@/lib/email-types";
 import { MAX_UPLOAD_BYTES, blobToBase64, formatBytes, prepareFile, type PreparedFile } from "@/lib/image";
 
 export function SubmitForm({
@@ -26,6 +27,9 @@ export function SubmitForm({
   const [processingTime, setProcessingTime] = useState("");
   const [dueDate, setDueDate] = useState("");
   const [continuationOf, setContinuationOf] = useState("");
+  const [emailFrom, setEmailFrom] = useState("");
+  const [emailSubject, setEmailSubject] = useState("");
+  const [emailLink, setEmailLink] = useState("");
   const [trackingNo, setTrackingNo] = useState("");
   const [files, setFiles] = useState<PreparedFile[]>([]);
   const [previews, setPreviews] = useState<{ kind: "img" | "file"; url?: string; name: string; ext: string; ico: string }[]>([]);
@@ -40,6 +44,8 @@ export function SubmitForm({
 
   const isIncoming = docType === "Incoming Docs";
   const isTask = docType === "New Task";
+  // Incoming "Email" → linked to the Gmail conversation in the PESO mailbox.
+  const isEmail = docType === "Incoming Docs" && isEmailTitle(title);
   const showCalendar = isIncoming || isTask;
 
   const totalBytes = files.reduce((sum, f) => sum + f.blob.size, 0);
@@ -98,7 +104,15 @@ export function SubmitForm({
       return;
     }
     // Files are required for documents, optional for tasks.
-    if (!isTask && files.length === 0) {
+    if (isEmail && !emailFrom.trim() && !emailLink.trim()) {
+      setToast({ title: "Missing Fields", body: "Enter the sender's email address (or a Gmail link).", error: true });
+      return;
+    }
+    if (isEmail && emailFrom.trim() && !EMAIL_PATTERN.test(emailFrom.trim())) {
+      setToast({ title: "Invalid Email", body: "That sender email address isn't valid.", error: true });
+      return;
+    }
+    if (!isTask && !isEmail && files.length === 0) {
       setToast({ title: "Missing Fields", body: "Please attach at least one file.", error: true });
       return;
     }
@@ -136,6 +150,9 @@ export function SubmitForm({
           processingTime,
           dueDate: isTask ? dueDate : "",
           continuationOf: isTask ? "" : continuationOf.trim(),
+          emailFrom: isEmail ? emailFrom.trim() : "",
+          emailSubject: isEmail ? emailSubject.trim() : "",
+          emailLink: isEmail ? emailLink.trim() : "",
           files: payloadFiles,
         }),
       });
@@ -149,6 +166,7 @@ export function SubmitForm({
         setTrackingNo(result.trackingNo || "");
         const extras: string[] = [];
         if (result.trackingNo) extras.push(`linked to ${result.trackingNo}`);
+        if (result.emailLinked) extras.push("email linked");
         if (selectedStaff.length) extras.push(`${selectedStaff.length} staff notified`);
         if (showCalendar && addToCalendar) extras.push("added to calendar");
         const suffix = extras.length ? " · " + extras.join(" · ") : "";
@@ -179,6 +197,9 @@ export function SubmitForm({
     setProcessingTime("");
     setDueDate("");
     setContinuationOf("");
+    setEmailFrom("");
+    setEmailSubject("");
+    setEmailLink("");
     setFiles([]);
     setPreviews([]);
     if (cameraRef.current) cameraRef.current.value = "";
@@ -267,6 +288,34 @@ export function SubmitForm({
             placeholder={isTask ? "Describe the task, what needs to be done, and any details…" : "Enter document details, references, and purpose..."}
           />
         </div>
+
+        {isEmail && (
+          <div className="email-box">
+            <div className="email-box-title">✉️ Find the email in peso@bataan.gov.ph</div>
+            <div className="form-group">
+              <label>Sender&apos;s Email Address <span className="required">*</span></label>
+              <input
+                type="text"
+                inputMode="email"
+                value={emailFrom}
+                onChange={(e) => setEmailFrom(e.target.value)}
+                placeholder="e.g. juan.delacruz@gmail.com"
+              />
+            </div>
+            <div className="form-group">
+              <label>Email Subject <span className="optional">(optional — helps pick the right email)</span></label>
+              <input type="text" value={emailSubject} onChange={(e) => setEmailSubject(e.target.value)} placeholder="e.g. Inquiry: SPES schedule" />
+            </div>
+            <div className="form-group" style={{ marginBottom: 0 }}>
+              <label>Gmail Link <span className="optional">(optional)</span></label>
+              <input type="text" value={emailLink} onChange={(e) => setEmailLink(e.target.value)} placeholder="https://mail.google.com/mail/u/0/#inbox/…" />
+              <div className="field-hint">
+                The latest email from this sender is linked, and its text and attachments are saved with the record —
+                no file upload needed. Assigned staff can read and reply from the dashboard.
+              </div>
+            </div>
+          </div>
+        )}
 
         {docType && !isTask && (
           <div className="form-group">
@@ -363,7 +412,7 @@ export function SubmitForm({
         )}
 
         <div className="form-group">
-          <label>Attach Files {isTask ? <span className="optional">(optional)</span> : <span className="required">*</span>}</label>
+          <label>Attach Files {isTask || isEmail ? <span className="optional">(optional)</span> : <span className="required">*</span>}</label>
           <div
             className={"upload-section" + (dragover ? " dragover" : "")}
             onDragOver={(e) => { e.preventDefault(); setDragover(true); }}
@@ -484,6 +533,9 @@ const FORM_CSS = `
 .submit-scope .control-no-badge { display: flex; align-items: center; gap: 10px; background: rgba(110,231,183,0.1); border: 1px solid rgba(110,231,183,0.3); border-radius: 8px; padding: 12px 16px; margin-bottom: 20px; font-size: 13px; color: var(--accent2); }
 .submit-scope .control-no-badge .tn { font-family: "IBM Plex Mono", monospace; font-size: 12px; opacity: .85; margin-top: 2px; }
 .submit-scope .mono-input { font-family: "IBM Plex Mono", monospace !important; letter-spacing: .5px; }
+.submit-scope .email-box { margin-bottom: 20px; padding: 14px 14px 16px; border: 1px solid rgba(79,142,247,0.25); background: rgba(79,142,247,0.05); border-radius: var(--radius); }
+.submit-scope .email-box .form-group { margin-bottom: 14px; }
+.submit-scope .email-box-title { font-size: 13px; font-weight: 700; color: var(--accent); margin-bottom: 12px; }
 .submit-scope .field-hint { margin-top: 6px; font-size: 11px; color: var(--text2); line-height: 1.45; }
 .submit-scope .control-no-badge .cn { font-family: "IBM Plex Mono", monospace; font-weight: 700; font-size: 15px; }
 .submit-scope .progress-bar { height: 3px; background: var(--border); border-radius: 2px; margin-bottom: 20px; overflow: hidden; }

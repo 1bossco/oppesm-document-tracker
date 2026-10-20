@@ -19,6 +19,11 @@
 // Sheets used (created automatically if missing):
 //   Incoming Docs · Outgoing Docs · Title of Document · Printing · Audit Trail
 //   Processes · Process Notes  (document tracking across IN/OUT movements)
+//   Email Threads  (Incoming "Email" documents ↔ Gmail conversations)
+//
+// Gmail: this script reads and replies to mail in the mailbox of the account
+// it runs as (peso@bataan.gov.ph). After adding the email feature, run
+// authorizeGmail() once from the editor BEFORE deploying a new version.
 //
 // Column M of Incoming Docs / Outgoing Docs holds the Tracking No that links
 // several movements of the same paper into one process.
@@ -92,6 +97,8 @@ function doGet(e) {
     if (resource === "chat")      return jsonOut_(readChat_(e.parameter.controlNo));
     if (resource === "mov")       return jsonOut_(readMov_(e.parameter.controlNo));
     if (resource === "processes") return jsonOut_(readProcesses_());
+    if (resource === "email")     return jsonOut_(readEmail_(e.parameter.controlNo));
+    if (resource === "emailCandidates") return jsonOut_(readEmailCandidates_(e.parameter.from));
     return jsonOut_({ error: "Unknown resource: " + resource });
   } catch (err) {
     return jsonOut_({ error: err.message });
@@ -100,6 +107,7 @@ function doGet(e) {
 
 function readDocuments_() {
   const out = [];
+  const emailMap = emailThreadMap_();
   MOVEMENT_SHEETS.forEach(function (name) {
     const sheet = ss_().getSheetByName(name);
     if (!sheet || sheet.getLastRow() < 2) return;
@@ -111,6 +119,7 @@ function readDocuments_() {
         title: fmt_(r[3]), description: fmt_(r[4]), fileUrl: fmt_(r[5]),
         staff: fmt_(r[6]), processingTime: fmt_(r[7]), dueDate: "", statusDoc: fmt_(r[8]),
         progress: fmt_(r[9]), printStatus: fmt_(r[10]), trackingNo: fmt_(r[TRACK_COL - 1]),
+        emailThreadId: emailMap[fmt_(r[1])] || "",
       });
     });
   });
@@ -130,7 +139,7 @@ function readTasks_() {
         timestamp: fmt_(r[0]), controlNo: fmt_(r[1]), docType: "New Task",
         title: fmt_(r[3]), description: fmt_(r[4]), fileUrl: fmt_(r[5]),
         staff: fmt_(r[6]), processingTime: "", dueDate: fmtDate_(r[7]),
-        statusDoc: fmt_(r[8]), progress: fmt_(r[9]), printStatus: "", trackingNo: "",
+        statusDoc: fmt_(r[8]), progress: fmt_(r[9]), printStatus: "", trackingNo: "", emailThreadId: "",
       };
     });
 }
@@ -252,6 +261,7 @@ function isoOrText_(value) {
 // ════════════════════════════════════════════════════════════
 // POST — actions: submit · updateStatus · markPrinted · delete · addChat · addMov
 //                linkDocument · unlinkDocument · addProcessNote · setProcessStatus
+//                linkEmail · sendEmailReply
 // ════════════════════════════════════════════════════════════
 function doPost(e) {
   let payload;
@@ -271,6 +281,8 @@ function doPost(e) {
       case "unlinkDocument":   return jsonOut_(unlinkDocument_(payload));
       case "addProcessNote":   return jsonOut_(addProcessNote_(payload));
       case "setProcessStatus": return jsonOut_(setProcessStatusAction_(payload));
+      case "linkEmail":        return jsonOut_(linkEmail_(payload));
+      case "sendEmailReply":   return jsonOut_(sendEmailReply_(payload));
       default:             return jsonOut_({ success: false, error: "Unknown action." });
     }
   } catch (err) {
@@ -301,19 +313,30 @@ function submitDocument_(p) {
       return { success: false, error: "Not found: " + continuationOf + ". Check the control number on the paper." };
     }
 
+    // Incoming "Email": find the Gmail conversation before anything is written.
+    let emailThread = null;
+    if (isIncoming && (p.emailFrom || p.emailLink)) {
+      emailThread = findEmailThread_(p.emailFrom, p.emailSubject, p.emailLink);
+      if (!emailThread) {
+        return { success: false, error: "No email found in the PESO mailbox for that sender/link. Check the address (and subject)." };
+      }
+    }
+
     // Daily sequence — highest number used today + 1 (never reuses a deleted number).
     const seqNum = nextSeq_(sheet, prefix + "-" + dateStr);
     const controlNo = prefix + "-" + dateStr + "-" + String(seqNum).padStart(3, "0");
 
     // Upload files to a Drive subfolder (skipped for tasks with no files).
+    // A linked email's text + attachments are saved there too.
     let fileUrl = "";
-    if (p.files && p.files.length) {
-      const parent = getOrCreateFolder_(FOLDER_NAME);
-      const docFolder = parent.createFolder(controlNo);
-      p.files.forEach(function (f) {
+    let docFolder = null;
+    if ((p.files && p.files.length) || emailThread) {
+      docFolder = getOrCreateFolder_(FOLDER_NAME).createFolder(controlNo);
+      (p.files || []).forEach(function (f) {
         const blob = Utilities.newBlob(Utilities.base64Decode(f.data), f.type, f.name);
         docFolder.createFile(blob);
       });
+      if (emailThread) saveEmailToFolder_(emailThread, docFolder);
       fileUrl = docFolder.getUrl();
     }
 
@@ -351,6 +374,7 @@ function submitDocument_(p) {
     }
 
     logAudit_(ss, "Submit", controlNo, "", "Submitted", p.staff || "User");
+    if (emailThread) recordEmailThread_(ss, controlNo, emailThread, p.staff || "Submission form");
 
     let trackingNo = "";
     if (continuationOf) {
@@ -374,6 +398,7 @@ function submitDocument_(p) {
       success: true,
       controlNo: controlNo,
       trackingNo: trackingNo,
+      emailLinked: Boolean(emailThread),
       notified: notified,
       calendar: calendarOk,
       deadline: deadline ? Utilities.formatDate(deadline, TZ, "yyyy-MM-dd") : "",
@@ -560,7 +585,7 @@ function markPrinted_(p) {
 // ── Delete from all sheets ───────────────────────────────────
 function deleteDocument_(p) {
   const ss = ss_();
-  ["Incoming Docs", "Outgoing Docs", "Tasks", "Printing", "Task Chat", "Task MOV"].forEach(function (name) {
+  ["Incoming Docs", "Outgoing Docs", "Tasks", "Printing", "Task Chat", "Task MOV", "Email Threads"].forEach(function (name) {
     const sheet = ss.getSheetByName(name);
     if (!sheet || sheet.getLastRow() < 2) return;
     const data = sheet.getRange(2, 1, sheet.getLastRow() - 1, 2).getValues();
@@ -614,6 +639,213 @@ function addMov_(p) {
   const id = "mov-" + Date.now();
   sheet.appendRow([id, controlNo, p.uploadedBy || "Unknown", file.name, fileUrl, p.note || "", new Date()]);
   return { success: true, id: id, fileUrl: fileUrl };
+}
+
+// ════════════════════════════════════════════════════════════
+// EMAIL — Incoming "Email" documents linked to a Gmail conversation in this
+// account's mailbox (peso@bataan.gov.ph). Staff read and reply from the
+// tracker; replies go out in the same Gmail thread and are recorded as linked
+// Outgoing documents.
+//   Email Threads: Linked At | Control No | Thread ID | From | Subject | Linked By
+// (Control No is column B so deleteDocument_ cleans it up like the other sheets.)
+// ════════════════════════════════════════════════════════════
+const EMAIL_RE_ = /^[^\s@"'()<>,;:\\]+@[^\s@"'()<>,;:\\]+\.[^\s@"'()<>,;:\\]+$/;
+
+// Run once from the Apps Script editor (select it → Run) to grant Gmail access
+// BEFORE deploying the new version.
+function authorizeGmail() {
+  Logger.log("Gmail access OK. Unread in inbox: " + GmailApp.getInboxUnreadCount());
+}
+
+function getEmailThreadsSheet_(ss) {
+  let sheet = ss.getSheetByName("Email Threads");
+  if (!sheet) {
+    sheet = ss.insertSheet("Email Threads");
+    sheet.appendRow(["Linked At", "Control No", "Thread ID", "From", "Subject", "Linked By"]);
+  }
+  return sheet;
+}
+
+// controlNo → threadId for every linked document.
+function emailThreadMap_() {
+  const sheet = ss_().getSheetByName("Email Threads");
+  const map = {};
+  if (!sheet || sheet.getLastRow() < 2) return map;
+  readRows_(sheet, 3).forEach(function (r) { if (r[1] && r[2]) map[String(r[1])] = String(r[2]); });
+  return map;
+}
+
+function threadIdFor_(controlNo) {
+  return emailThreadMap_()[String(controlNo)] || "";
+}
+
+// Finds a conversation from an old-style Gmail link (16-hex thread id) or by
+// sender address (+ optional subject). Returns a GmailThread or null.
+function findEmailThread_(from, subject, link) {
+  const m = String(link || "").match(/(?:#[a-z]+\/|\/)([0-9a-f]{16})(?![0-9a-z])/i);
+  if (m) {
+    try { const t = GmailApp.getThreadById(m[1]); if (t) return t; } catch (err) { /* fall through */ }
+  }
+  from = String(from || "").trim();
+  if (!EMAIL_RE_.test(from)) return null;
+  let q = "from:" + from;
+  const subj = String(subject || "").replace(/["\\]/g, " ").replace(/\s+/g, " ").trim();
+  if (subj) q += ' subject:"' + subj + '"';
+  const threads = GmailApp.search(q, 0, 1);
+  return threads.length ? threads[0] : null;
+}
+
+function myAddress_() { return Session.getEffectiveUser().getEmail().toLowerCase(); }
+
+// Latest message in the thread that wasn't sent by this account.
+function lastIncomingMessage_(thread) {
+  const me = myAddress_();
+  const msgs = thread.getMessages();
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    if (msgs[i].getFrom().toLowerCase().indexOf(me) === -1) return msgs[i];
+  }
+  return msgs[msgs.length - 1];
+}
+
+// Saves the latest incoming message (as .txt) and its attachments to `folder`.
+function saveEmailToFolder_(thread, folder) {
+  try {
+    const msg = lastIncomingMessage_(thread);
+    const header =
+      "From: " + msg.getFrom() + "\nTo: " + msg.getTo() + (msg.getCc() ? "\nCc: " + msg.getCc() : "") +
+      "\nDate: " + Utilities.formatDate(msg.getDate(), TZ, "yyyy-MM-dd HH:mm") +
+      "\nSubject: " + msg.getSubject() + "\nGmail: " + thread.getPermalink() + "\n\n";
+    folder.createFile(Utilities.newBlob(header + msg.getPlainBody(), "text/plain", "email.txt"));
+    msg.getAttachments().forEach(function (a) { folder.createFile(a.copyBlob()); });
+  } catch (err) {
+    Logger.log("saveEmailToFolder error: " + err.message);
+  }
+}
+
+function recordEmailThread_(ss, controlNo, thread, user) {
+  const sheet = getEmailThreadsSheet_(ss);
+  const msg = thread.getMessages()[0];
+  const row = [new Date(), controlNo, thread.getId(), msg.getFrom(), thread.getFirstMessageSubject(), user];
+  const rows = readRows_(sheet, 2);
+  const idx = rows.findIndex(function (r) { return String(r[1]) === controlNo; });
+  if (idx === -1) sheet.appendRow(row);
+  else sheet.getRange(idx + 2, 1, 1, 6).setValues([row]);
+}
+
+function messageJson_(m) {
+  const body = m.getPlainBody() || "";
+  return {
+    id: m.getId(),
+    from: m.getFrom(), to: m.getTo(), cc: m.getCc(),
+    date: m.getDate().toISOString(),
+    subject: m.getSubject(),
+    body: body.length > 20000 ? body.slice(0, 20000) + "\n…(truncated)" : body,
+    attachments: m.getAttachments().map(function (a) { return { name: a.getName(), size: a.getSize() }; }),
+    mine: m.getFrom().toLowerCase().indexOf(myAddress_()) !== -1,
+  };
+}
+
+// GET resource=email&controlNo=…  → the linked conversation (or linked:false)
+function readEmail_(controlNo) {
+  const threadId = threadIdFor_(controlNo);
+  if (!threadId) return { linked: false };
+  const thread = GmailApp.getThreadById(threadId);
+  if (!thread) return { linked: false, error: "The linked email no longer exists in the mailbox." };
+  return {
+    linked: true, threadId: threadId, subject: thread.getFirstMessageSubject(),
+    permalink: thread.getPermalink(), mailbox: myAddress_(),
+    messages: thread.getMessages().map(messageJson_),
+  };
+}
+
+// GET resource=emailCandidates&from=…  → recent conversations from a sender
+function readEmailCandidates_(from) {
+  from = String(from || "").trim();
+  if (!EMAIL_RE_.test(from)) return { error: "Enter a valid email address." };
+  return GmailApp.search("from:" + from, 0, 10).map(function (t) {
+    const last = t.getMessages()[t.getMessageCount() - 1];
+    return {
+      threadId: t.getId(), subject: t.getFirstMessageSubject(), date: t.getLastMessageDate().toISOString(),
+      messageCount: t.getMessageCount(), snippet: (last.getPlainBody() || "").replace(/\s+/g, " ").slice(0, 140),
+    };
+  });
+}
+
+// POST linkEmail { controlNo, threadId, user }
+function linkEmail_(p) {
+  const controlNo = String(p.controlNo || "").trim();
+  const ss = ss_();
+  const mov = findMovement_(ss, controlNo.toUpperCase());
+  if (!mov || mov.sheet.getName() !== "Incoming Docs") return { success: false, error: "Only Incoming documents can be linked to an email." };
+  let thread = null;
+  try { thread = GmailApp.getThreadById(String(p.threadId || "")); } catch (err) { thread = null; }
+  if (!thread) return { success: false, error: "Email conversation not found." };
+  recordEmailThread_(ss, mov.controlNo, thread, p.user || "Admin");
+  logAudit_(ss, "Link email", mov.controlNo, "", thread.getFirstMessageSubject(), p.user || "Admin");
+  return { success: true };
+}
+
+function escapeHtml_(s) {
+  return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+// POST sendEmailReply { controlNo, body, replyAll, signature, files[], user }
+// Replies in the Gmail thread from this account, then records an Outgoing
+// document (Done, not for printing) linked to the same tracked process.
+function sendEmailReply_(p) {
+  const controlNo = String(p.controlNo || "").trim();
+  const text = String(p.body || "").trim();
+  if (!controlNo || !text) return { success: false, error: "A message is required." };
+  const threadId = threadIdFor_(controlNo);
+  if (!threadId) return { success: false, error: "This document isn't linked to an email." };
+  const thread = GmailApp.getThreadById(threadId);
+  if (!thread) return { success: false, error: "The linked email no longer exists in the mailbox." };
+
+  const signature = String(p.signature || "").trim();
+  const plain = text + (signature ? "\n\n" + signature : "");
+  const html =
+    '<div style="font-family:Arial,sans-serif;font-size:14px">' +
+    escapeHtml_(text).replace(/\n/g, "<br>") +
+    (signature ? '<br><br><span style="color:#555">' + escapeHtml_(signature).replace(/\n/g, "<br>") + "</span>" : "") +
+    "</div>";
+  const attachments = (p.files || []).map(function (f) {
+    return Utilities.newBlob(Utilities.base64Decode(f.data), f.type, f.name);
+  });
+
+  const target = lastIncomingMessage_(thread);
+  const options = { htmlBody: html };
+  if (attachments.length) options.attachments = attachments;
+  if (p.replyAll) target.replyAll(plain, options); else target.reply(plain, options);
+
+  const user = p.user || "Admin";
+  const ss = ss_();
+  const lock = LockService.getScriptLock();
+  try {
+    lock.waitLock(30000);
+    const sheet = ss.getSheetByName("Outgoing Docs");
+    if (!sheet) throw new Error("Sheet not found: Outgoing Docs");
+    const now = new Date();
+    const prefix = "OG-" + Utilities.formatDate(now, TZ, "yyMMdd");
+    const outNo = prefix + "-" + String(nextSeq_(sheet, prefix)).padStart(3, "0");
+    const recipients = p.replyAll ? [target.getFrom(), target.getTo(), target.getCc()].filter(String).join(", ") : target.getFrom();
+    const description = "Email reply to: " + recipients + "\nSubject: " + thread.getFirstMessageSubject() + "\n\n" +
+      (text.length > 500 ? text.slice(0, 500) + "…" : text);
+    // Done + no print status → never enters the For Printing queue.
+    sheet.appendRow([now, outNo, "Outgoing Docs", "Email Reply", description, thread.getPermalink(), user, "", "Done", "Done", ""]);
+    logAudit_(ss, "Email reply sent", outNo, controlNo, recipients, user);
+
+    const mov = { sheet: sheet, row: sheet.getLastRow(), controlNo: outNo, trackingNo: "" };
+    const trackingNo = joinProcess_(ss, mov, controlNo, user);
+    logAudit_(ss, "Link to process", outNo, "", trackingNo, user);
+    autoCompleteFor_(ss, outNo, user);
+    return { success: true, controlNo: outNo, trackingNo: trackingNo };
+  } catch (err) {
+    // The email already went out — report success so nobody re-sends it.
+    Logger.log("Reply recording error: " + err.message);
+    return { success: true, controlNo: "", trackingNo: "", warning: "Reply sent, but it could not be recorded: " + err.message };
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 // ════════════════════════════════════════════════════════════

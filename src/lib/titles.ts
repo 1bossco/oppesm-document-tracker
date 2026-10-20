@@ -19,6 +19,7 @@ export const sampleTitles: TitleOption[] = [
   { title: "Notice of Meeting", processingTime: "1 day" },
   { title: "Certificate of Employment", processingTime: "3 days" },
   { title: "Special Program for Employment of Students (SPES) Forms", processingTime: "5 days" },
+  { title: "Email", processingTime: "3 days" },
 ];
 
 /** Titles + processing times for the submission dropdown. */
