@@ -98,6 +98,20 @@ export function SubmitForm({
     setStatus("");
   }
 
+  // `files` and `previews` are parallel arrays — remove the same index from both.
+  function removeFile(index: number) {
+    const url = previews[index]?.url;
+    if (url) URL.revokeObjectURL(url);
+    setFiles((prev) => prev.filter((_, i) => i !== index));
+    setPreviews((prev) => prev.filter((_, i) => i !== index));
+  }
+
+  function removeAllFiles() {
+    previews.forEach((p) => p.url && URL.revokeObjectURL(p.url));
+    setFiles([]);
+    setPreviews([]);
+  }
+
   async function handleSubmit() {
     if (!docType || !title || !description) {
       setToast({ title: "Missing Fields", body: "Please fill in all required fields.", error: true });
@@ -425,36 +439,55 @@ export function SubmitForm({
                 <div className="ub-title">Take Photo</div>
                 <div className="ub-sub">Use camera to<br />capture document</div>
                 <input ref={cameraRef} type="file" accept="image/*" capture="environment" multiple
-                  onChange={(e) => handleFileSelection(Array.from(e.target.files ?? []))} />
+                  onChange={(e) => { handleFileSelection(Array.from(e.target.files ?? [])); e.target.value = ""; }} />
               </label>
               <label className="upload-btn" title="Choose from gallery or files">
                 <div className="ub-ico">&#128193;</div>
                 <div className="ub-title">Choose File</div>
                 <div className="ub-sub">Gallery, PDF,<br />DOCX, XLSX&hellip;</div>
                 <input ref={galleryRef} type="file" accept="*/*" multiple
-                  onChange={(e) => handleFileSelection(Array.from(e.target.files ?? []))} />
+                  onChange={(e) => { handleFileSelection(Array.from(e.target.files ?? [])); e.target.value = ""; }} />
               </label>
             </div>
             {files.length > 0 && (
               <div className={"file-count show" + (totalBytes > MAX_UPLOAD_BYTES ? " over" : "")}>
-                {files.length} file{files.length !== 1 ? "s" : ""} ready · {formatBytes(totalBytes)} of {formatBytes(MAX_UPLOAD_BYTES)}
-                {totalBytes > MAX_UPLOAD_BYTES && " — too large, remove some files"}
+                <span>
+                  {files.length} file{files.length !== 1 ? "s" : ""} ready · {formatBytes(totalBytes)} of {formatBytes(MAX_UPLOAD_BYTES)}
+                  {totalBytes > MAX_UPLOAD_BYTES && " — too large, tap ✕ to remove a file"}
+                </span>
+                <button type="button" className="fc-clear" onClick={removeAllFiles} disabled={busy}>Remove all</button>
               </div>
             )}
             {previews.length > 0 && (
               <div className="preview-grid show">
-                {previews.map((p, i) =>
-                  p.kind === "img" ? (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img key={i} className="preview-thumb" src={p.url} alt={p.name} />
-                  ) : (
-                    <div key={i} className="preview-file">
-                      <div className="pf-ico">{p.ico}</div>
-                      <div className="pf-ext">{p.ext}</div>
-                      <div className="pf-name">{p.name}</div>
+                {previews.map((p, i) => {
+                  const size = files[i]?.blob.size ?? 0;
+                  return (
+                    <div key={(p.url || p.name) + i} className={"preview-item" + (size > MAX_UPLOAD_BYTES ? " too-big" : "")}>
+                      {p.kind === "img" ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img className="preview-thumb" src={p.url} alt={p.name} />
+                      ) : (
+                        <div className="preview-file">
+                          <div className="pf-ico">{p.ico}</div>
+                          <div className="pf-ext">{p.ext}</div>
+                          <div className="pf-name">{p.name}</div>
+                        </div>
+                      )}
+                      <span className="preview-size">{formatBytes(size)}</span>
+                      <button
+                        type="button"
+                        className="preview-remove"
+                        onClick={() => removeFile(i)}
+                        disabled={busy}
+                        aria-label={"Remove " + p.name}
+                        title={"Remove " + p.name}
+                      >
+                        ✕
+                      </button>
                     </div>
-                  )
-                )}
+                  );
+                })}
               </div>
             )}
           </div>
@@ -522,6 +555,16 @@ const FORM_CSS = `
 .submit-scope .file-count { padding: 8px 14px; font-size: 12px; font-family: "IBM Plex Mono", monospace; color: var(--accent2); border-top: 1px solid var(--border); background: rgba(110,231,183,0.04); }
 .submit-scope .file-count.over { color: var(--danger); background: rgba(248,113,113,0.06); }
 .submit-scope .preview-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(76px, 1fr)); gap: 8px; padding: 10px 14px; border-top: 1px solid var(--border); }
+.submit-scope .file-count { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.submit-scope .fc-clear { background: none; border: none; color: var(--text2); font-family: inherit; font-size: 11px; text-decoration: underline; cursor: pointer; padding: 0; white-space: nowrap; }
+.submit-scope .fc-clear:hover:not(:disabled) { color: var(--danger); }
+.submit-scope .preview-item { position: relative; }
+.submit-scope .preview-item.too-big .preview-thumb, .submit-scope .preview-item.too-big .preview-file { border-color: var(--danger); }
+.submit-scope .preview-size { position: absolute; left: 4px; bottom: 4px; background: rgba(10,13,22,0.8); color: var(--text); font-size: 9px; font-family: "IBM Plex Mono", monospace; padding: 1px 5px; border-radius: 4px; pointer-events: none; }
+.submit-scope .preview-item.too-big .preview-size { background: var(--danger); color: #fff; }
+.submit-scope .preview-remove { position: absolute; top: -6px; right: -6px; width: 22px; height: 22px; border-radius: 50%; border: 2px solid var(--surface); background: var(--danger); color: #fff; font-size: 11px; font-weight: 700; line-height: 1; cursor: pointer; display: flex; align-items: center; justify-content: center; padding: 0; }
+.submit-scope .preview-remove:hover:not(:disabled) { transform: scale(1.1); }
+.submit-scope .preview-remove:disabled { opacity: .4; cursor: not-allowed; }
 .submit-scope .preview-thumb { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 6px; border: 1px solid var(--border); }
 .submit-scope .preview-file { width: 100%; aspect-ratio: 1; border-radius: 6px; border: 1px solid var(--border); background: var(--surface2); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; padding: 6px; overflow: hidden; }
 .submit-scope .preview-file .pf-ico { font-size: 22px; line-height: 1; }
