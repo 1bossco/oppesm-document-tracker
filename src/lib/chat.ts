@@ -7,6 +7,12 @@ export interface ChatMessage {
   author: string;
   message: string;
   createdAt: string; // ISO 8601
+  /** Set when the author edited the message (ISO). */
+  editedAt?: string;
+  /** Set when the author unsent the message (ISO); message is then empty. */
+  deletedAt?: string;
+  /** First wording of an edited message. */
+  originalMessage?: string;
 }
 
 interface ChatRow {
@@ -15,6 +21,9 @@ interface ChatRow {
   author?: string;
   message?: string;
   createdAt?: string;
+  editedAt?: string;
+  deletedAt?: string;
+  originalMessage?: string;
 }
 
 function isoDaysAgo(days: number, h: number, m: number): string {
@@ -45,14 +54,27 @@ export async function getChat(controlNo: string): Promise<ChatMessage[]> {
         author: String(r.author ?? "").trim() || "Unknown",
         message: String(r.message ?? "").trim(),
         createdAt: String(r.createdAt ?? "").trim(),
+        editedAt: String(r.editedAt ?? "").trim(),
+        deletedAt: String(r.deletedAt ?? "").trim(),
+        originalMessage: String(r.originalMessage ?? "").trim(),
       }))
     : sampleChat().filter((m) => m.controlNo === controlNo);
 
   return list
-    .filter((m) => m.message)
+    .filter((m) => m.message || m.deletedAt)
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 }
 
 export async function addChat(controlNo: string, author: string, message: string) {
   return backendPost({ action: "addChat", controlNo, author, message });
+}
+
+/** Edit a message (backend checks the user is its author). */
+export async function editChat(controlNo: string, id: string, message: string, user: string) {
+  return backendPost({ action: "editChat", controlNo, id, message, user });
+}
+
+/** Unsend a message (backend checks the user is its author). */
+export async function deleteChat(controlNo: string, id: string, user: string) {
+  return backendPost({ action: "deleteChat", controlNo, id, user });
 }

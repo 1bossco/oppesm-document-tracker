@@ -214,43 +214,91 @@ function readStaff_() {
 }
 
 // Task Chat sheet: Id | Control No | Author | Message | Created At
+//                  | Edited At | Deleted At | Changed By | Original Message   (F–I)
+// Edits overwrite D and keep the first wording in I; an unsend only stamps G —
+// the row is never removed, so the sheet keeps the full record.
+const CHAT_HEADERS_ = ["Id", "Control No", "Author", "Message", "Created At", "Edited At", "Deleted At", "Changed By", "Original Message"];
 function getChatSheet_(ss) {
   let sheet = ss.getSheetByName("Task Chat");
   if (!sheet) {
     sheet = ss.insertSheet("Task Chat");
-    sheet.appendRow(["Id", "Control No", "Author", "Message", "Created At"]);
+    sheet.appendRow(CHAT_HEADERS_);
   }
+  ensureHeaders_(sheet, CHAT_HEADERS_);
   return sheet;
 }
 function readChat_(controlNo) {
   const sheet = ss_().getSheetByName("Task Chat");
   if (!sheet || sheet.getLastRow() < 2) return [];
-  const rows = sheet.getRange(2, 1, sheet.getLastRow() - 1, 5).getValues();
-  return rows
+  return readRows_(sheet, 9)
     .filter(function (r) { return r[1] && (!controlNo || String(r[1]) === String(controlNo)); })
     .map(function (r) {
-      return { id: fmt_(r[0]), controlNo: fmt_(r[1]), author: fmt_(r[2]), message: fmt_(r[3]), createdAt: isoOrText_(r[4]) };
+      const deleted = r[6] !== "" && r[6] !== null;
+      const edited = r[5] !== "" && r[5] !== null;
+      return {
+        id: fmt_(r[0]), controlNo: fmt_(r[1]), author: fmt_(r[2]),
+        // An unsent message's wording stays in the sheet but is not sent to the website.
+        message: deleted ? "" : fmt_(r[3]),
+        createdAt: isoOrText_(r[4]),
+        editedAt: edited && !deleted ? isoOrText_(r[5]) : "",
+        deletedAt: deleted ? isoOrText_(r[6]) : "",
+        originalMessage: edited && !deleted ? fmt_(r[8]) : "",
+      };
     });
 }
 
 // Task MOV sheet: Id | Control No | Uploaded By | File Name | File URL | Note | Created At
+//                 | Removed At | Removed By   (H–I)
+const MOV_HEADERS_ = ["Id", "Control No", "Uploaded By", "File Name", "File URL", "Note", "Created At", "Removed At", "Removed By"];
 function getMovSheet_(ss) {
   let sheet = ss.getSheetByName("Task MOV");
   if (!sheet) {
     sheet = ss.insertSheet("Task MOV");
-    sheet.appendRow(["Id", "Control No", "Uploaded By", "File Name", "File URL", "Note", "Created At"]);
+    sheet.appendRow(MOV_HEADERS_);
   }
+  ensureHeaders_(sheet, MOV_HEADERS_);
   return sheet;
 }
 function readMov_(controlNo) {
   const sheet = ss_().getSheetByName("Task MOV");
   if (!sheet || sheet.getLastRow() < 2) return [];
-  const rows = sheet.getRange(2, 1, sheet.getLastRow() - 1, 7).getValues();
-  return rows
+  return readRows_(sheet, 9)
     .filter(function (r) { return r[1] && (!controlNo || String(r[1]) === String(controlNo)); })
     .map(function (r) {
-      return { id: fmt_(r[0]), controlNo: fmt_(r[1]), uploadedBy: fmt_(r[2]), fileName: fmt_(r[3]), fileUrl: fmt_(r[4]), note: fmt_(r[5]), createdAt: isoOrText_(r[6]) };
+      const removed = r[7] !== "" && r[7] !== null;
+      return {
+        id: fmt_(r[0]), controlNo: fmt_(r[1]), uploadedBy: fmt_(r[2]), fileName: fmt_(r[3]),
+        fileUrl: removed ? "" : fmt_(r[4]), note: removed ? "" : fmt_(r[5]), createdAt: isoOrText_(r[6]),
+        removedAt: removed ? isoOrText_(r[7]) : "",
+      };
     });
+}
+
+// Fill in any missing header cells (only blank ones — existing headers are kept).
+function ensureHeaders_(sheet, headers) {
+  if (sheet.getMaxColumns() < headers.length) {
+    sheet.insertColumnsAfter(sheet.getMaxColumns(), headers.length - sheet.getMaxColumns());
+  }
+  const current = sheet.getRange(1, 1, 1, headers.length).getValues()[0];
+  headers.forEach(function (h, i) {
+    if (current[i] === "" || current[i] === null) sheet.getRange(1, i + 1).setValue(h);
+  });
+}
+
+// Same person? (names are compared ignoring case and extra spaces)
+function sameName_(a, b) {
+  const norm = function (s) { return String(s || "").replace(/\s+/g, " ").trim().toLowerCase(); };
+  return norm(a) !== "" && norm(a) === norm(b);
+}
+
+// Row number (2-based sheet row) of the entry with this Id and Control No, or -1.
+function findEntryRow_(sheet, id, controlNo) {
+  if (sheet.getLastRow() < 2) return -1;
+  const data = sheet.getRange(2, 1, sheet.getLastRow() - 1, 2).getValues();
+  for (let i = 0; i < data.length; i++) {
+    if (String(data[i][0]) === String(id) && String(data[i][1]) === String(controlNo)) return i + 2;
+  }
+  return -1;
 }
 
 function isoOrText_(value) {
@@ -260,6 +308,7 @@ function isoOrText_(value) {
 
 // ════════════════════════════════════════════════════════════
 // POST — actions: submit · updateStatus · markPrinted · delete · addChat · addMov
+//                editChat · deleteChat · removeMov
 //                linkDocument · unlinkDocument · addProcessNote · setProcessStatus
 //                linkEmail · sendEmailReply
 // ════════════════════════════════════════════════════════════
@@ -277,6 +326,9 @@ function doPost(e) {
       case "delete":       return jsonOut_(deleteDocument_(payload));
       case "addChat":      return jsonOut_(addChat_(payload));
       case "addMov":       return jsonOut_(addMov_(payload));
+      case "editChat":     return jsonOut_(editChat_(payload));
+      case "deleteChat":   return jsonOut_(deleteChat_(payload));
+      case "removeMov":    return jsonOut_(removeMov_(payload));
       case "linkDocument":     return jsonOut_(linkDocument_(payload));
       case "unlinkDocument":   return jsonOut_(unlinkDocument_(payload));
       case "addProcessNote":   return jsonOut_(addProcessNote_(payload));
@@ -614,9 +666,63 @@ function addChat_(p) {
   if (!controlNo || !message) return { success: false, error: "Control number and message are required." };
   const ss = ss_();
   const sheet = getChatSheet_(ss);
-  const id = "chat-" + Date.now();
+  const id = "chat-" + Date.now() + "-" + Math.random().toString(36).slice(2, 7);
   sheet.appendRow([id, controlNo, p.author || "Unknown", message, new Date()]);
   return { success: true, id: id };
+}
+
+// Run fn while holding the script lock, so a row found by Id can't shift
+// (e.g. a record being deleted) before it is written.
+function withLock_(fn) {
+  const lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try { return fn(); } finally { lock.releaseLock(); }
+}
+
+// Edit a chat message — only by its author. Keeps the first wording in column I.
+function editChat_(p) {
+  const controlNo = String(p.controlNo || "").trim();
+  const message = String(p.message || "").trim();
+  if (!controlNo || !p.id || !message) return { success: false, error: "Message id and new text are required." };
+  return withLock_(function () {
+    const ss = ss_();
+    const sheet = getChatSheet_(ss);
+    const row = findEntryRow_(sheet, p.id, controlNo);
+    if (row < 0) return { success: false, error: "Message not found. Refresh and try again." };
+    const r = sheet.getRange(row, 1, 1, 9).getValues()[0];
+    if (!sameName_(r[2], p.user)) return { success: false, error: "Only the person who wrote this message can edit it." };
+    if (r[6] !== "" && r[6] !== null) return { success: false, error: "This message was already deleted." };
+    const old = fmt_(r[3]);
+    if (old === message) return { success: true, editedAt: isoOrText_(r[5]), originalMessage: fmt_(r[8]) };
+    const original = (r[8] !== "" && r[8] !== null) ? fmt_(r[8]) : old;
+    const now = new Date();
+    sheet.getRange(row, 4).setValue(message);
+    sheet.getRange(row, 6).setValue(now);
+    sheet.getRange(row, 8).setValue(String(p.user));
+    sheet.getRange(row, 9).setValue(original);
+    logAudit_(ss, "Edit Message", controlNo, old, message, p.user);
+    return { success: true, editedAt: now.toISOString(), originalMessage: original };
+  });
+}
+
+// Unsend a chat message — only by its author. The row stays; column G marks it deleted.
+function deleteChat_(p) {
+  const controlNo = String(p.controlNo || "").trim();
+  if (!controlNo || !p.id) return { success: false, error: "Message id is required." };
+  return withLock_(function () {
+    const ss = ss_();
+    const sheet = getChatSheet_(ss);
+    const row = findEntryRow_(sheet, p.id, controlNo);
+    if (row < 0) return { success: false, error: "Message not found. Refresh and try again." };
+    const r = sheet.getRange(row, 1, 1, 9).getValues()[0];
+    if (!sameName_(r[2], p.user)) return { success: false, error: "Only the person who wrote this message can unsend it." };
+    if (r[6] !== "" && r[6] !== null) return { success: true, deletedAt: isoOrText_(r[6]) };
+    const now = new Date();
+    sheet.getRange(row, 7).setValue(now);
+    sheet.getRange(row, 8).setValue(String(p.user));
+    logAudit_(ss, "Unsend Message", controlNo, fmt_(r[3]), "(deleted)", p.user);
+    return { success: true, deletedAt: now.toISOString() };
+  });
 }
 
 // ── Task MOV (Means of Verification) ─────────────────────────
@@ -636,9 +742,36 @@ function addMov_(p) {
   const fileUrl = driveFile.getUrl();
 
   const sheet = getMovSheet_(ss);
-  const id = "mov-" + Date.now();
+  const id = "mov-" + Date.now() + "-" + Math.random().toString(36).slice(2, 7);
   sheet.appendRow([id, controlNo, p.uploadedBy || "Unknown", file.name, fileUrl, p.note || "", new Date()]);
   return { success: true, id: id, fileUrl: fileUrl };
+}
+
+// Remove an attached file — only by its uploader. The row stays (marked in H–I);
+// the Drive file goes to the trash (recoverable there for 30 days).
+function removeMov_(p) {
+  const controlNo = String(p.controlNo || "").trim();
+  if (!controlNo || !p.id) return { success: false, error: "File id is required." };
+  return withLock_(function () {
+    const ss = ss_();
+    const sheet = getMovSheet_(ss);
+    const row = findEntryRow_(sheet, p.id, controlNo);
+    if (row < 0) return { success: false, error: "File not found. Refresh and try again." };
+    const r = sheet.getRange(row, 1, 1, 9).getValues()[0];
+    if (!sameName_(r[2], p.user)) return { success: false, error: "Only the person who attached this file can remove it." };
+    if (r[7] !== "" && r[7] !== null) return { success: true, removedAt: isoOrText_(r[7]) };
+    const now = new Date();
+    sheet.getRange(row, 8).setValue(now);
+    sheet.getRange(row, 9).setValue(String(p.user));
+    try {
+      const m = String(r[4]).match(/\/d\/([A-Za-z0-9_-]+)/) || String(r[4]).match(/[?&]id=([A-Za-z0-9_-]+)/);
+      if (m) DriveApp.getFileById(m[1]).setTrashed(true);
+    } catch (err) {
+      Logger.log("Drive trash error: " + err.message);
+    }
+    logAudit_(ss, "Remove File", controlNo, fmt_(r[3]), "(removed)", p.user);
+    return { success: true, removedAt: now.toISOString() };
+  });
 }
 
 // ════════════════════════════════════════════════════════════

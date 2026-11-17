@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { SESSION_COOKIE, isValidSession } from "@/lib/auth";
-import { addMov, getMov } from "@/lib/mov";
+import { addMov, getMov, removeMov } from "@/lib/mov";
 import { isBackendConnected } from "@/lib/sheet";
 
 async function requireSession() {
@@ -44,9 +44,31 @@ export async function POST(request: Request) {
 
     const result = await addMov(controlNo, item.uploadedBy, note, file);
     if (!result.ok) return NextResponse.json({ error: result.error ?? "Could not upload." }, { status: 502 });
-    const url = (result.data as { fileUrl?: string })?.fileUrl;
-    return NextResponse.json({ ok: true, item: { ...item, fileUrl: url || "#" } });
+    const data = result.data as { id?: string; fileUrl?: string };
+    return NextResponse.json({ ok: true, item: { ...item, id: data?.id || item.id, fileUrl: data?.fileUrl || "#" } });
   } catch {
     return NextResponse.json({ error: "Unable to upload MOV." }, { status: 500 });
+  }
+}
+
+// Remove an attached file: { controlNo, id, user }
+export async function DELETE(request: Request) {
+  if (!(await requireSession())) return unauthorized();
+  try {
+    const body = await request.json();
+    const controlNo = String(body?.controlNo ?? "").trim();
+    const id = String(body?.id ?? "").trim();
+    const user = String(body?.user ?? "").trim();
+    if (!controlNo || !id) return NextResponse.json({ error: "A file id is required." }, { status: 400 });
+    if (!user) return NextResponse.json({ error: "Pick your name first." }, { status: 400 });
+
+    if (!isBackendConnected()) {
+      return NextResponse.json({ ok: true, removedAt: new Date().toISOString(), demo: true });
+    }
+    const result = await removeMov(controlNo, id, user);
+    if (!result.ok) return NextResponse.json({ error: result.error ?? "Could not remove." }, { status: 502 });
+    return NextResponse.json({ ok: true, removedAt: (result.data as { removedAt?: string })?.removedAt ?? "" });
+  } catch {
+    return NextResponse.json({ error: "Unable to remove file." }, { status: 500 });
   }
 }

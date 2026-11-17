@@ -9,6 +9,8 @@ export interface MovItem {
   fileUrl: string;
   note: string;
   createdAt: string; // ISO 8601
+  /** Set when the uploader removed the file (ISO); link and note are then empty. */
+  removedAt?: string;
 }
 
 interface MovRow {
@@ -19,6 +21,7 @@ interface MovRow {
   fileUrl?: string;
   note?: string;
   createdAt?: string;
+  removedAt?: string;
 }
 
 // Sample MOV entries for local preview.
@@ -51,6 +54,7 @@ export async function getMov(controlNo: string): Promise<MovItem[]> {
         fileUrl: String(r.fileUrl ?? "").trim(),
         note: String(r.note ?? "").trim(),
         createdAt: String(r.createdAt ?? "").trim(),
+        removedAt: String(r.removedAt ?? "").trim(),
       }))
     : sampleMov().filter((m) => m.controlNo === controlNo);
 
@@ -66,4 +70,9 @@ export async function addMov(
   file: { name: string; type: string; data: string }
 ) {
   return backendPost({ action: "addMov", controlNo, uploadedBy, note, file });
+}
+
+/** Remove an attached file (backend checks the user is its uploader). */
+export async function removeMov(controlNo: string, id: string, user: string) {
+  return backendPost({ action: "removeMov", controlNo, id, user });
 }

@@ -14,6 +14,12 @@ function fmtStamp(iso: string): string {
   return d.toLocaleString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
+/** Same person? Ignores case and extra spaces (matches the backend's check). */
+function sameName(a: string, b: string): boolean {
+  const norm = (s: string) => s.replace(/\s+/g, " ").trim().toLowerCase();
+  return norm(a) !== "" && norm(a) === norm(b);
+}
+
 export function TaskThread({
   controlNo,
   title,
@@ -47,6 +53,9 @@ export function TaskThread({
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [editingId, setEditingId] = useState("");
+  const [editDraft, setEditDraft] = useState("");
+  const [openOriginals, setOpenOriginals] = useState<Set<string>>(new Set());
 
   const fileRef = useRef<HTMLInputElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -111,6 +120,106 @@ export function TaskThread({
         setDraft("");
       } else {
         setError(data.error || "Could not post.");
+      }
+    } catch {
+      setError("Could not reach the server.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function startEdit(m: ChatMessage) {
+    setEditingId(m.id);
+    setEditDraft(m.message);
+    setError("");
+  }
+
+  async function saveEdit(m: ChatMessage) {
+    const message = editDraft.trim();
+    if (!message || !identity) return;
+    if (message === m.message) { setEditingId(""); return; }
+    setBusy(true);
+    setError("");
+    try {
+      const res = await fetch("/api/chat", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ controlNo, id: m.id, message, user: identity }),
+      });
+      const data = await res.json().catch(() => ({ error: `Server error (${res.status}).` }));
+      if (data.ok) {
+        setMessages((prev) => prev.map((x) => x.id === m.id
+          ? {
+              ...x,
+              message,
+              editedAt: data.editedAt || new Date().toISOString(),
+              originalMessage: data.originalMessage || x.originalMessage || x.message,
+            }
+          : x));
+        setEditingId("");
+      } else {
+        setError(data.error || "Could not edit.");
+      }
+    } catch {
+      setError("Could not reach the server.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function unsend(m: ChatMessage) {
+    if (!identity) return;
+    if (!window.confirm("Unsend this message? Everyone will see \"This message was deleted\".")) return;
+    setBusy(true);
+    setError("");
+    try {
+      const res = await fetch("/api/chat", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ controlNo, id: m.id, user: identity }),
+      });
+      const data = await res.json().catch(() => ({ error: `Server error (${res.status}).` }));
+      if (data.ok) {
+        setMessages((prev) => prev.map((x) => x.id === m.id
+          ? { ...x, message: "", editedAt: "", originalMessage: "", deletedAt: data.deletedAt || new Date().toISOString() }
+          : x));
+        if (editingId === m.id) setEditingId("");
+      } else {
+        setError(data.error || "Could not unsend.");
+      }
+    } catch {
+      setError("Could not reach the server.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function toggleOriginal(id: string) {
+    setOpenOriginals((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
+
+  async function removeFile(m: MovItem) {
+    if (!identity) return;
+    if (!window.confirm(`Remove "${m.fileName}"? Everyone will see that a file was removed.`)) return;
+    setBusy(true);
+    setError("");
+    try {
+      const res = await fetch("/api/mov", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ controlNo, id: m.id, user: identity }),
+      });
+      const data = await res.json().catch(() => ({ error: `Server error (${res.status}).` }));
+      if (data.ok) {
+        setMovItems((prev) => prev.map((x) => x.id === m.id
+          ? { ...x, fileUrl: "", note: "", removedAt: data.removedAt || new Date().toISOString() }
+          : x));
+      } else {
+        setError(data.error || "Could not remove the file.");
       }
     } catch {
       setError("Could not reach the server.");
@@ -188,8 +297,8 @@ export function TaskThread({
         </div>
 
         <div className="tt-tabs">
-          <button className={tab === "chat" ? "active" : ""} onClick={() => setTab("chat")}>{L.chatTab} ({messages.length})</button>
-          <button className={tab === "mov" ? "active" : ""} onClick={() => setTab("mov")}>{L.filesTab} ({movItems.length})</button>
+          <button className={tab === "chat" ? "active" : ""} onClick={() => setTab("chat")}>{L.chatTab} ({messages.filter((m) => !m.deletedAt).length})</button>
+          <button className={tab === "mov" ? "active" : ""} onClick={() => setTab("mov")}>{L.filesTab} ({movItems.filter((m) => !m.removedAt).length})</button>
         </div>
 
         {error && <div className="tt-error">{error}</div>}
@@ -202,12 +311,69 @@ export function TaskThread({
               ) : messages.length === 0 ? (
                 <div className="tt-empty">{L.chatEmpty}</div>
               ) : (
-                messages.map((m) => (
-                  <div className={"tt-msg" + (m.author === identity ? " mine" : "")} key={m.id}>
-                    <div className="tt-msg-head"><b>{m.author}</b><span>{fmtStamp(m.createdAt)}</span></div>
-                    <div className="tt-msg-body">{m.message}</div>
-                  </div>
-                ))
+                messages.map((m) => {
+                  const mine = sameName(m.author, identity);
+                  if (m.deletedAt) {
+                    return (
+                      <div className={"tt-msg tt-gone" + (mine ? " mine" : "")} key={m.id}>
+                        <div className="tt-msg-head"><b>{m.author}</b><span>{fmtStamp(m.createdAt)}</span></div>
+                        <div className="tt-msg-body" title={`Deleted ${fmtStamp(m.deletedAt)}`}>🚫 This message was deleted</div>
+                      </div>
+                    );
+                  }
+                  const editing = editingId === m.id;
+                  const showOrig = openOriginals.has(m.id) && !!m.editedAt;
+                  return (
+                    <div className={"tt-msg" + (mine ? " mine" : "") + (editing ? " editing" : "")} key={m.id}>
+                      <div className="tt-msg-head">
+                        <b>{m.author}</b><span>{fmtStamp(m.createdAt)}</span>
+                        {m.editedAt && (
+                          <button
+                            className="tt-edited"
+                            title={`Edited ${fmtStamp(m.editedAt)} — click to ${showOrig ? "hide" : "see"} the original`}
+                            onClick={() => toggleOriginal(m.id)}
+                          >
+                            edited
+                          </button>
+                        )}
+                      </div>
+                      {editing ? (
+                        <div className="tt-edit">
+                          <textarea
+                            value={editDraft}
+                            autoFocus
+                            disabled={busy}
+                            onChange={(e) => setEditDraft(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); saveEdit(m); }
+                              if (e.key === "Escape") setEditingId("");
+                            }}
+                          />
+                          <div className="tt-msg-actions">
+                            <button onClick={() => setEditingId("")} disabled={busy}>Cancel</button>
+                            <button className="primary" onClick={() => saveEdit(m)} disabled={busy || !editDraft.trim()}>
+                              {busy ? "Saving…" : "Save"}
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="tt-msg-body">{m.message}</div>
+                      )}
+                      {showOrig && (
+                        <div className="tt-orig">
+                          <span>Original message:</span>
+                          {m.originalMessage || "(not available)"}
+                        </div>
+                      )}
+                      {mine && !editing && (
+                        <div className="tt-msg-actions">
+                          <button onClick={() => startEdit(m)} disabled={busy}>Edit</button>
+                          <button className="danger" onClick={() => unsend(m)} disabled={busy}>Unsend</button>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })
               )}
             </div>
             <div className="tt-compose">
@@ -229,7 +395,15 @@ export function TaskThread({
               ) : movItems.length === 0 ? (
                 <div className="tt-empty">{L.filesEmpty}</div>
               ) : (
-                movItems.map((m) => (
+                movItems.map((m) => m.removedAt ? (
+                  <div className="tt-mov tt-gone" key={m.id}>
+                    <div className="tt-mov-ico">🚫</div>
+                    <div className="tt-mov-main">
+                      <div className="tt-mov-gone">This file was removed</div>
+                      <div className="tt-mov-meta">{m.uploadedBy} · {fmtStamp(m.createdAt)} · removed {fmtStamp(m.removedAt)}</div>
+                    </div>
+                  </div>
+                ) : (
                   <div className="tt-mov" key={m.id}>
                     <div className="tt-mov-ico">📄</div>
                     <div className="tt-mov-main">
@@ -241,6 +415,11 @@ export function TaskThread({
                       {m.note && <div className="tt-mov-note">{m.note}</div>}
                       <div className="tt-mov-meta">{m.uploadedBy} · {fmtStamp(m.createdAt)}</div>
                     </div>
+                    {sameName(m.uploadedBy, identity) && (
+                      <button className="tt-mov-remove" title="Remove this file" onClick={() => removeFile(m)} disabled={busy}>
+                        Remove
+                      </button>
+                    )}
                   </div>
                 ))
               )}
@@ -325,7 +504,26 @@ const TT_CSS = `
 .tt-send:disabled { opacity: .5; cursor: not-allowed; }
 .tt-mov { display: flex; gap: 10px; background: var(--surface2); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; }
 .tt-mov-ico { font-size: 20px; }
-.tt-mov-main { min-width: 0; }
+.tt-mov-main { min-width: 0; flex: 1; }
+.tt-mov-remove { align-self: flex-start; background: none; border: 1px solid var(--border); border-radius: 6px; color: var(--text3); font-size: 11px; padding: 3px 8px; cursor: pointer; font-family: inherit; }
+.tt-mov-remove:hover:not(:disabled) { color: var(--danger); border-color: var(--danger); }
+.tt-mov-remove:disabled { opacity: .5; cursor: not-allowed; }
+.tt-mov-gone { font-size: 13px; font-style: italic; color: var(--text3); }
+.tt-gone { opacity: .75; background: transparent !important; border-style: dashed !important; }
+.tt-gone .tt-msg-body { font-style: italic; color: var(--text3); }
+.tt-edited { background: none; border: none; padding: 0; font-size: 10px; font-style: italic; color: var(--text3); text-decoration: underline dotted; cursor: pointer; font-family: inherit; }
+.tt-edited:hover { color: var(--accent); }
+.tt-orig { margin-top: 6px; padding: 6px 8px; border-left: 2px solid var(--border); background: rgba(0,0,0,.15); border-radius: 4px; font-size: 12px; color: var(--text2); white-space: pre-wrap; word-break: break-word; }
+.tt-orig span { display: block; font-size: 10px; font-weight: 600; color: var(--text3); text-transform: uppercase; letter-spacing: .04em; margin-bottom: 2px; }
+.tt-msg-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 5px; }
+.tt-msg-actions button { background: none; border: none; padding: 0; font-size: 11px; color: var(--text3); cursor: pointer; font-family: inherit; }
+.tt-msg-actions button:hover:not(:disabled) { color: var(--accent); text-decoration: underline; }
+.tt-msg-actions button.danger:hover:not(:disabled) { color: var(--danger); }
+.tt-msg-actions button.primary { color: var(--accent); font-weight: 600; }
+.tt-msg-actions button:disabled { opacity: .5; cursor: not-allowed; }
+.tt-msg.editing { width: 88%; }
+.tt-edit textarea { width: 100%; box-sizing: border-box; min-height: 56px; resize: vertical; padding: 7px 9px; background: var(--surface); border: 1px solid var(--accent); border-radius: 6px; color: var(--text); font-family: inherit; font-size: 13px; }
+.tt-edit textarea:focus { outline: none; }
 .tt-mov-name { font-size: 13px; font-weight: 600; color: var(--accent); word-break: break-all; }
 .tt-mov-note { font-size: 12px; color: var(--text2); margin-top: 2px; line-height: 1.4; }
 .tt-mov-meta { font-size: 10px; color: var(--text3); margin-top: 4px; }
