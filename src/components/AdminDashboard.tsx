@@ -205,7 +205,7 @@ export function AdminDashboard({
   const [toast, setToast] = useState<{ title: string; body: string; error?: boolean } | null>(null);
   const [showPrint, setShowPrint] = useState(false);
   const [paperSize, setPaperSize] = useState<"long" | "a4" | "short">("long");
-  const [threadFor, setThreadFor] = useState<{ controlNo: string; title: string; tab: "chat" | "mov" } | null>(null);
+  const [threadFor, setThreadFor] = useState<{ controlNo: string; title: string; tab: "chat" | "mov"; variant: "task" | "update" } | null>(null);
 
   const stats = useMemo(() => computeStats(docs), [docs]);
   const taskCount = useMemo(() => docs.filter((d) => d.docType === "New Task").length, [docs]);
@@ -687,12 +687,15 @@ export function AdminDashboard({
                               <div className="act-btns">
                                 {d.docType === "New Task" && (
                                   <>
-                                    <button className="btn btn-outline btn-xs" title="Task chat" onClick={() => setThreadFor({ controlNo: d.controlNo, title: d.title, tab: "chat" })}>💬</button>
-                                    <button className="btn btn-outline btn-xs" title="Means of Verification" onClick={() => setThreadFor({ controlNo: d.controlNo, title: d.title, tab: "mov" })}>📎</button>
+                                    <button className="btn btn-outline btn-xs" title="Task chat" onClick={() => setThreadFor({ controlNo: d.controlNo, title: d.title, tab: "chat", variant: "task" })}>💬</button>
+                                    <button className="btn btn-outline btn-xs" title="Means of Verification" onClick={() => setThreadFor({ controlNo: d.controlNo, title: d.title, tab: "mov", variant: "task" })}>📎</button>
                                   </>
                                 )}
                                 {d.docType === "Incoming Docs" && (d.emailThreadId || isEmailTitle(d.title)) && (
                                   <button className="btn btn-outline btn-xs" title="Read & reply to the email" onClick={() => setEmailFor(d.controlNo)}>✉️</button>
+                                )}
+                                {d.docType !== "New Task" && (
+                                  <button className="btn btn-update btn-xs" title="Post an update or attach supporting documents" onClick={() => setThreadFor({ controlNo: d.controlNo, title: d.title, tab: "chat", variant: "update" })}>Update</button>
                                 )}
                                 {d.docType !== "New Task" && (
                                   <button className="btn btn-outline btn-xs" title="Link to a tracked process" onClick={() => promptLink(d.controlNo)}>🔗</button>
@@ -980,6 +983,8 @@ export function AdminDashboard({
           staff={staff}
           connected={connected}
           initialTab={threadFor.tab}
+          variant={threadFor.variant}
+          defaultIdentity={adminName}
           onClose={() => setThreadFor(null)}
         />
       )}
@@ -1141,6 +1146,7 @@ const ADMIN_CSS = `
 .admin-scope .badge-gray { background: rgba(136,145,179,.15); color: var(--text2); }
 .admin-scope .badge-purple { background: rgba(167,139,250,.15); color: var(--purple); }
 .admin-scope .badge-orange { background: rgba(251,146,60,.15); color: var(--orange); }
+.admin-scope .btn-update { background: rgba(79,142,247,.15); color: var(--accent); border: 1px solid rgba(79,142,247,.35); }
 .admin-scope .btn-warn { background: rgba(251,191,36,.15); color: var(--warn); border: 1px solid rgba(251,191,36,.3); }
 .admin-scope .fp-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; flex-wrap: wrap; margin-bottom: 18px; }
 .admin-scope .fp-info h2 { font-size: 17px; font-weight: 700; display: flex; align-items: center; gap: 8px; }

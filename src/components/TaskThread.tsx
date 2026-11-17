@@ -20,6 +20,8 @@ export function TaskThread({
   staff,
   connected,
   initialTab,
+  variant = "task",
+  defaultIdentity = "",
   onClose,
 }: {
   controlNo: string;
@@ -27,8 +29,13 @@ export function TaskThread({
   staff: PublicStaff[];
   connected: boolean;
   initialTab: "chat" | "mov";
+  /** "task" = task chat + MOV; "update" = document updates + supporting files (same storage). */
+  variant?: "task" | "update";
+  /** Used when this browser hasn't picked a name yet (the signed-in admin). */
+  defaultIdentity?: string;
   onClose: () => void;
 }) {
+  const L = LABELS[variant];
   const [tab, setTab] = useState<"chat" | "mov">(initialTab);
   const [identity, setIdentity] = useState<string>("");
   const [pickName, setPickName] = useState<string>("");
@@ -49,8 +56,11 @@ export function TaskThread({
     try {
       const saved = localStorage.getItem(IDENTITY_KEY);
       if (saved) setIdentity(saved);
-    } catch {}
-  }, []);
+      else if (defaultIdentity) setIdentity(defaultIdentity);
+    } catch {
+      if (defaultIdentity) setIdentity(defaultIdentity);
+    }
+  }, [defaultIdentity]);
 
   // Load chat + MOV for this task.
   useEffect(() => {
@@ -178,8 +188,8 @@ export function TaskThread({
         </div>
 
         <div className="tt-tabs">
-          <button className={tab === "chat" ? "active" : ""} onClick={() => setTab("chat")}>💬 Chat</button>
-          <button className={tab === "mov" ? "active" : ""} onClick={() => setTab("mov")}>📎 MOV ({movItems.length})</button>
+          <button className={tab === "chat" ? "active" : ""} onClick={() => setTab("chat")}>{L.chatTab} ({messages.length})</button>
+          <button className={tab === "mov" ? "active" : ""} onClick={() => setTab("mov")}>{L.filesTab} ({movItems.length})</button>
         </div>
 
         {error && <div className="tt-error">{error}</div>}
@@ -190,7 +200,7 @@ export function TaskThread({
               {loading ? (
                 <div className="tt-empty">Loading…</div>
               ) : messages.length === 0 ? (
-                <div className="tt-empty">No messages yet. Start the conversation.</div>
+                <div className="tt-empty">{L.chatEmpty}</div>
               ) : (
                 messages.map((m) => (
                   <div className={"tt-msg" + (m.author === identity ? " mine" : "")} key={m.id}>
@@ -202,7 +212,7 @@ export function TaskThread({
             </div>
             <div className="tt-compose">
               <textarea
-                placeholder={identity ? "Write a message…" : "Pick your name above to chat"}
+                placeholder={identity ? L.chatPlaceholder : "Pick your name above to chat"}
                 value={draft}
                 disabled={!identity || busy}
                 onChange={(e) => setDraft(e.target.value)}
@@ -217,7 +227,7 @@ export function TaskThread({
               {loading ? (
                 <div className="tt-empty">Loading…</div>
               ) : movItems.length === 0 ? (
-                <div className="tt-empty">No verification files yet. Upload proof of progress below.</div>
+                <div className="tt-empty">{L.filesEmpty}</div>
               ) : (
                 movItems.map((m) => (
                   <div className="tt-mov" key={m.id}>
@@ -238,7 +248,7 @@ export function TaskThread({
             <div className="tt-compose tt-mov-upload">
               <input
                 className="tt-mov-notein"
-                placeholder="Optional note (what this proves)…"
+                placeholder={L.notePlaceholder}
                 value={movNote}
                 disabled={!identity || busy}
                 onChange={(e) => setMovNote(e.target.value)}
@@ -250,7 +260,7 @@ export function TaskThread({
                 onChange={(e) => { const f = e.target.files?.[0]; if (f) uploadMov(f); }}
               />
               <button className="tt-send" disabled={!identity || busy} onClick={() => fileRef.current?.click()}>
-                {busy ? "Uploading…" : "＋ Attach MOV"}
+                {busy ? "Uploading…" : L.attach}
               </button>
             </div>
           </>
@@ -259,6 +269,27 @@ export function TaskThread({
     </div>
   );
 }
+
+const LABELS = {
+  task: {
+    chatTab: "💬 Chat",
+    filesTab: "📎 MOV",
+    chatEmpty: "No messages yet. Start the conversation.",
+    chatPlaceholder: "Write a message…",
+    filesEmpty: "No verification files yet. Upload proof of progress below.",
+    notePlaceholder: "Optional note (what this proves)…",
+    attach: "＋ Attach MOV",
+  },
+  update: {
+    chatTab: "💬 Updates",
+    filesTab: "📎 Supporting Docs",
+    chatEmpty: "No updates yet. Post the first update on this document.",
+    chatPlaceholder: "Write an update (what was done, who it was forwarded to…)",
+    filesEmpty: "No supporting documents yet. Attach files below.",
+    notePlaceholder: "Optional note (what this file is)…",
+    attach: "＋ Attach file",
+  },
+};
 
 const TT_CSS = `
 .tt-overlay { position: fixed; inset: 0; z-index: 300; background: rgba(6,9,16,.6); display: flex; justify-content: flex-end; }
